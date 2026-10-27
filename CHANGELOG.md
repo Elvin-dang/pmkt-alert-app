@@ -2,6 +2,13 @@
 
 Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản phát hành sẽ không build nếu thiếu mục cho phiên bản đó.
 
+## v0.1.5 – 27/10/2026
+### Mới
+- File đầu vào có thể là **.csv** hoặc **.xlsx** (trộn được). File Tracking dạng CSV gồm 3 file: raw_sso_us, Product Info, KPI (INELIGIBLE ASIN tuỳ chọn) – app nhận diện theo cột, không theo tên. CSV đọc nhanh hơn ~4 lần.
+- Hỗ trợ CSV phân cách bằng dấu phẩy / chấm phẩy / tab, có hoặc không có BOM; ngày dạng 2026-10-25 hoặc 25/10/2026.
+### Lưu ý
+- File logic (Alert_Logic) vẫn phải là .xlsx.
+
 ## v0.1.4 – 27/10/2026
 ### Mới
 - Cập nhật app chạy ngầm, không còn mở cửa sổ terminal; nếu lỗi sẽ tự mở lại bản cũ và ghi `update.log`.

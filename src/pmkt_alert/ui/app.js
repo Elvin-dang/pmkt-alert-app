@@ -10,7 +10,7 @@ const signed = (v) => (num(v) ? (v >= 0 ? "+" : "−") + Math.abs(v * 100).toFix
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : "");
 const short = (label) => String(label || "").split(" – ")[0];
 const SEV = { HIGH: 0, MED: 1, LOW: 2, "": 3 };
-const ROLE_NAME = { tracker: "Tracking (raw_sso_us, Product Info, KPI)", ads: "Ads by Campaign (ads_camp)", activity: "Activity Log", logic: "Alert_Logic", defind: "Defind" };
+const ROLE_NAME = { tracker: "Tracking (raw_sso_us, Product Info, KPI – 1 file .xlsx hoặc 3 file .csv)", ads: "Ads by Campaign (ads_camp)", activity: "Activity Log", logic: "Alert_Logic", defind: "Defind" };
 
 let api = null;
 const S = { paths: [], roles: null, run: null, ai: null, runId: null, pic: null, open: new Set(), update: null, fb: null, origSlack: "" };
@@ -133,9 +133,10 @@ async function useInputs(paths) {
   const r = await api.detect([...paths, ...S.paths]);
   if (bad(r)) return;
   S.roles = r.roles;
-  S.paths = Object.values(r.roles).map((x) => x.path);
+  S.paths = Object.values(r.roles).flatMap((x) => x.paths || [x.path]);
   const msgs = [];
-  if (r.missing.length) msgs.push("Còn thiếu: " + r.missing.map((m) => ROLE_NAME[m]).join(", "));
+  if (r.missing.length) msgs.push("Còn thiếu: " + r.missing.map((m) => ROLE_NAME[m]).join(", ")
+    + (r.tracker_missing?.length ? ` (CSV còn thiếu: ${r.tracker_missing.join(", ")})` : ""));
   if (r.unknown.length) msgs.push("Không nhận ra: " + r.unknown.join(", "));
   $("#input-error").textContent = msgs.join(" · ");
   renderSlots();

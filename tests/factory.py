@@ -247,3 +247,38 @@ def make_logic_v3(path: Path, blank: str | None = None, bad_matrix: bool = False
                 matrix.append([key, s, a, t, key, label, f"Gợi ý {key}" if label else None])
     return write_xlsx(path, {"README_Flow": [[None, "README", None]], "Logic_Tiers": [["Mô hình chấm điểm v3"]],
                              "Config": rows, "Matrix_PL": matrix})
+
+
+# ---------------------------------------------------------------- CSV inputs
+import csv as _csv  # noqa: E402
+
+
+def write_csv(path: Path, rows: list[list], sep: str = ",", bom: bool = False, date_fmt: str = "%Y-%m-%d") -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8-sig" if bom else "utf-8") as f:
+        w = _csv.writer(f, delimiter=sep)
+        for r in rows:
+            w.writerow([v.strftime(date_fmt) if isinstance(v, (datetime, date)) else ("" if v is None else v) for v in r])
+    return path
+
+
+def make_all_csv(dir_: Path) -> dict[str, Path]:
+    """Same data as make_all, but every table except the logic file is a CSV (mixed formats on purpose)."""
+    import openpyxl
+    d = Path(dir_)
+    tmp = make_all(d / "_xlsx")
+    wb = openpyxl.load_workbook(tmp["tracker"])
+    rows = lambda ws: [list(r) for r in ws.iter_rows(values_only=True)]  # noqa: E731
+    out = {
+        "raw": write_csv(d / "raw_sso_us.csv", rows(wb["raw_sso_us"]), bom=True),
+        "products": write_csv(d / "Product Info.csv", rows(wb["Product Info"])),
+        "kpi": write_csv(d / "KPI.csv", rows(wb["KPI"]), sep=";"),
+        "ads": write_csv(d / "ads_camp.csv", rows(openpyxl.load_workbook(tmp["ads"])["ads_camp"]), sep=";", date_fmt="%d/%m/%Y"),
+        "activity": write_csv(d / "Activity Log.csv", rows(openpyxl.load_workbook(tmp["activity"]).active), sep="\t"),
+        "defind": write_csv(d / "Defind.csv", rows(openpyxl.load_workbook(tmp["defind"]).active)),
+    }
+    import shutil
+    out["logic"] = Path(shutil.copy(tmp["logic"], d / tmp["logic"].name))
+    shutil.rmtree(d / "_xlsx")
+    return out

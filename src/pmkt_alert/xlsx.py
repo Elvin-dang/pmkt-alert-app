@@ -1,5 +1,7 @@
-"""Robust xlsx reading. Exports from the team's tools carry wrong <dimension> tags,
-so every read-only sheet has its dimensions reset before iterating."""
+"""Robust xlsx / csv reading. Exports from the team's tools carry wrong <dimension> tags,
+so every read-only sheet has its dimensions reset before iterating. A .csv is one table (no sheets):
+separator (, ; tab) and encoding (UTF-8 with or without BOM, else Windows-1258) are detected."""
+import csv
 from pathlib import Path
 
 import openpyxl
@@ -7,7 +9,35 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 
 
+def is_csv(path: Path) -> bool:
+    return Path(path).suffix.lower() == ".csv"
+
+
+def _read_csv(path: Path) -> tuple[list[str], list[tuple[int, tuple]]]:
+    raw = Path(path).read_bytes()
+    for enc in ("utf-8-sig", "cp1258", "latin-1"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    sample = text[:8192]
+    try:
+        sep = csv.Sniffer().sniff(sample, delimiters=",;\t").delimiter
+    except csv.Error:
+        sep = ","
+    rows = list(csv.reader(text.splitlines(), delimiter=sep))
+    if not rows:
+        return [], []
+    header = [h.strip() or f"col{i}" for i, h in enumerate(rows[0])]
+    body = [(n, tuple(v if v != "" else None for v in r)) for n, r in enumerate(rows[1:], 2) if any(x.strip() for x in r)]
+    width = len(header)
+    return header, [(n, r[:width] + (None,) * (width - len(r))) for n, r in body]
+
+
 def sheet_names(path: Path) -> list[str]:
+    if is_csv(path):
+        return []
     wb = openpyxl.load_workbook(path, read_only=True)
     try:
         return list(wb.sheetnames)
@@ -17,6 +47,8 @@ def sheet_names(path: Path) -> list[str]:
 
 def _read(path: Path, sheet: str | None, header_row: int):
     """(header, [(excel_row, values), ...]) with fully empty rows dropped."""
+    if is_csv(path):
+        return _read_csv(path)
     wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
     try:
         ws = wb[sheet] if sheet else wb.worksheets[0]

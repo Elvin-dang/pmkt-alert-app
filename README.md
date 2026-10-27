@@ -12,7 +12,7 @@ The app checks GitHub Releases for new versions (Settings → Phiên bản & c�
 
 ## Inputs
 
-Three data files and two setting files, recognised by their sheets/columns rather than file names:
+Data can be `.xlsx` or `.csv` (mixed is fine); the logic file must be `.xlsx`. Files are recognised by their sheets/columns rather than file names. As CSV, the tracking workbook becomes three files (`raw_sso_us`, `Product Info`, `KPI`, plus optional `INELIGIBLE ASIN`).
 
 | Role | Must contain |
 |---|---|

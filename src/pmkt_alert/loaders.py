@@ -6,9 +6,17 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 
-from .xlsx import read_sheet, read_sheet_with_rows, sheet_names, to_num
+from .xlsx import is_csv, read_sheet, read_sheet_with_rows, sheet_names, to_num
 
 ROLES = ("tracker", "ads", "activity", "logic", "defind")
+# The tracker workbook's tables; each may instead come as its own CSV.
+TRACKER_SHEETS = {"raw": "raw_sso_us", "products": "Product Info", "kpi": "KPI", "ineligible": "INELIGIBLE ASIN"}
+TRACKER_REQUIRED = ("raw", "products", "kpi")
+CSV_COLUMNS = {  # a CSV's table is recognised by these header columns
+    "raw": {"report_date", "asin", "sp_spend"}, "products": {"asin", "product_line_old", "status"},
+    "kpi": {"Month", "ASIN", "Spend_final"}, "ineligible": {"asin", "delivery_status"},
+    "ads": {"campaign_id", "spend_usd", "account_name"}, "activity": {"Level", "username"}, "defind": {"Tên File"},
+}
 ROLE_HINT = {
     "tracker": "file Tracking: cần sheet raw_sso_us, Product Info, KPI",
     "ads": "file Ads by Campaign: cần sheet ads_camp",
@@ -37,6 +45,9 @@ class Inputs:
 
 
 def _first_row(path: Path) -> list[str]:
+    if is_csv(path):
+        df = read_sheet(path)
+        return list(df.columns)
     wb = openpyxl.load_workbook(path, read_only=True)
     try:
         ws = wb.worksheets[0]
@@ -48,6 +59,10 @@ def _first_row(path: Path) -> list[str]:
 
 
 def role_of(path: Path) -> str | None:
+    """Workbook → tracker / ads / logic / activity / defind; CSV → its table (raw, products, kpi, ineligible, ads…)."""
+    if is_csv(path):
+        head = set(_first_row(path))
+        return next((t for t, cols in CSV_COLUMNS.items() if cols <= head), None)
     sheets = set(sheet_names(path))
     if {"raw_sso_us", "Product Info", "KPI"} <= sheets:
         return "tracker"
@@ -63,14 +78,19 @@ def role_of(path: Path) -> str | None:
     return None
 
 
-def detect_inputs(paths: list[Path]) -> dict[str, Path]:
+def input_files(paths: list[Path]) -> list[Path]:
     files: list[Path] = []
     for p in map(Path, paths):
-        files += sorted(p.glob("*.xlsx")) if p.is_dir() else [p]
+        files += sorted([*p.glob("*.xlsx"), *p.glob("*.csv")]) if p.is_dir() else [p]
+    return [f for f in files if not f.name.startswith("~$")]
+
+
+def detect_inputs(paths: list[Path]) -> dict[str, Path]:
+    """role/table → file. The tracker is one workbook, or its tables as CSVs (raw, products, kpi[, ineligible]);
+    a CSV table also overrides the matching sheet of a tracker workbook."""
+    files = input_files(paths)
     found: dict[str, list[Path]] = {}
     for f in files:
-        if f.name.startswith("~$"):
-            continue
         try:
             role = role_of(f)
         except Exception:
@@ -79,15 +99,50 @@ def detect_inputs(paths: list[Path]) -> dict[str, Path]:
             found.setdefault(role, []).append(f)
     if len(found.get("activity", [])) > 1:  # daily exports pile up in Downloads: use the newest
         found["activity"] = [max(found["activity"], key=lambda f: f.stat().st_mtime)]
-    for role in ROLES:
+    if "tracker" not in found and any(t in found for t in TRACKER_SHEETS):
+        missing = [TRACKER_SHEETS[t] for t in TRACKER_REQUIRED if t not in found]
+        if missing:
+            raise InputError("Thiếu file Tracking dạng CSV: " + ", ".join(missing)
+                             + " (hoặc dùng 1 file .xlsx có các sheet raw_sso_us, Product Info, KPI)")
+    needed = [r for r in ROLES if not (r == "tracker" and all(t in found for t in TRACKER_REQUIRED))]
+    for role in needed + [t for t in TRACKER_SHEETS if t in found]:
         if role not in found:
             raise InputError(f"Thiếu {ROLE_HINT[role]}")
         if len(found[role]) > 1:
-            raise InputError(f"Có nhiều hơn một {ROLE_HINT[role].split(':')[0]}: " + ", ".join(f.name for f in found[role]))
-    return {role: found[role][0] for role in ROLES}
+            name = ROLE_HINT[role].split(':')[0] if role in ROLE_HINT else f"file {TRACKER_SHEETS[role]}"
+            raise InputError(f"Có nhiều hơn một {name}: " + ", ".join(f.name for f in found[role]))
+    return {role: files_[0] for role, files_ in found.items() if role in needed or role in TRACKER_SHEETS}
+
+
+def _text_dates(s: pd.Series) -> pd.Series:
+    """Date text from CSVs, vectorised: ISO, or d/m/y vs m/d/y decided from the values (default day-first)."""
+    iso = pd.to_datetime(s, errors="coerce", format="ISO8601")
+    if iso.notna().mean() >= 0.9:
+        return iso
+    parts = s.str.extract(r"^\s*(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})")
+    a, b = pd.to_numeric(parts[0], errors="coerce"), pd.to_numeric(parts[1], errors="coerce")
+    dayfirst = bool((a > 12).any()) or not bool((b > 12).any())
+    day, month = (a, b) if dayfirst else (b, a)
+    year = pd.to_numeric(parts[2], errors="coerce")
+    year = year.where(year >= 100, year + 2000)
+    out = pd.to_datetime(pd.DataFrame({"year": year, "month": month, "day": day}), errors="coerce")
+    return out.where(out.notna(), iso)
 
 
 def _to_date(s: pd.Series) -> pd.Series:
+    texts = s.map(lambda v: isinstance(v, str))
+    if texts.any():
+        parsed = _text_dates(s[texts].astype(str))
+        out = s.copy().astype(object)
+        out[texts] = [None if pd.isna(v) else v.date() for v in parsed]
+        rest = ~texts
+        if rest.any():
+            out[rest] = _to_date_values(s[rest])
+        return out
+    return _to_date_values(s)
+
+
+def _to_date_values(s: pd.Series) -> pd.Series:
     def one(v):
         if isinstance(v, datetime):
             return v.date()
@@ -135,14 +190,22 @@ def _event_days(path: Path) -> dict[date, str]:
 
 def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
     """account: ads_camp account_name to keep; None = the account with the most rows."""
-    t = roles["tracker"]
+    t = roles.get("tracker")
     sources = {}
+
+    def table(name: str):
+        """(path, sheet) for a tracker table: its own CSV if given, else the workbook sheet (None if absent)."""
+        if name in roles:
+            return roles[name], None
+        if t is not None and TRACKER_SHEETS[name] in sheet_names(t):
+            return t, TRACKER_SHEETS[name]
+        return None
 
     def src(name: str, path: Path, sheet: str, letters: dict) -> None:
         sources[name] = {"file": Path(path).name, "sheet": sheet, "letters": letters}
 
-    raw, letters = read_sheet_with_rows(t, "raw_sso_us")
-    src("raw", t, "raw_sso_us", letters)
+    raw, letters = read_sheet_with_rows(*table("raw"))
+    src("raw", table("raw")[0], table("raw")[1], letters)
     _need(raw, ["report_date", "asin", "sku", "ordered_gmv_usd", "ppc_ordered_gmv_usd", "sp_spend", "sb_spend",
                 "sd_spend", "ppc_clicks", "ppc_orders"], "raw_sso_us")
     raw = pd.DataFrame({
@@ -152,8 +215,8 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
         "clicks": to_num(raw["ppc_clicks"]), "orders": to_num(raw["ppc_orders"]), "_row": raw["_row"],
     }).dropna(subset=["date"])
 
-    info, letters = read_sheet_with_rows(t, "Product Info")
-    src("products", t, "Product Info", letters)
+    info, letters = read_sheet_with_rows(*table("products"))
+    src("products", table("products")[0], table("products")[1], letters)
     _need(info, ["asin", "sku", "product_line_old", "status"], "Product Info")
     pic_cols = [c for c in info.columns if c.startswith("PIC ") or c == "PMKT PIC_Final"]
     products = pd.DataFrame({"asin": info["asin"].astype(str), "sku": info["sku"].astype(str),
@@ -164,14 +227,14 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
     if "Team Label" in info.columns:  # scope for the score model
         products["team"] = _clean_text(info["Team Label"])
 
-    k, letters = read_sheet_with_rows(t, "KPI")
-    src("kpi", t, "KPI", letters)
+    k, letters = read_sheet_with_rows(*table("kpi"))
+    src("kpi", table("kpi")[0], table("kpi")[1], letters)
     _need(k, ["Month", "ASIN", "GMV", "Spend_final"], "KPI")
     kpi = pd.DataFrame({"month": to_num(k["Month"]).astype(int), "asin": k["ASIN"].astype(str),
                         "gmv": to_num(k["GMV"]), "spend": to_num(k["Spend_final"]), "_row": k["_row"]})
 
-    if "INELIGIBLE ASIN" in sheet_names(t):
-        ie = read_sheet(t, "INELIGIBLE ASIN")
+    if table("ineligible"):
+        ie = read_sheet(*table("ineligible"))
         ineligible = pd.DataFrame({"date": _to_date(ie.get("log_date", pd.Series(dtype=object))),
                                    "asin": ie.get("asin", pd.Series(dtype=object)).astype(str),
                                    "status": ie.get("delivery_status", pd.Series(dtype=object)),
@@ -179,8 +242,9 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
     else:
         ineligible = pd.DataFrame(columns=["date", "asin", "status", "reason"])
 
-    a, letters = read_sheet_with_rows(roles["ads"], "ads_camp")
-    src("ads", roles["ads"], "ads_camp", letters)
+    ads_sheet = None if is_csv(roles["ads"]) else "ads_camp"
+    a, letters = read_sheet_with_rows(roles["ads"], ads_sheet)
+    src("ads", roles["ads"], ads_sheet, letters)
     _need(a, ["report_date", "account_name", "campaign_type", "campaign_id", "campaign_name", "asin",
               "spend_usd", "clicks", "sales_14d", "order_14d"], "ads_camp")
     names = a["account_name"].astype(str).str.strip()
@@ -199,7 +263,7 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
     ads.attrs["accounts"], ads.attrs["account"] = list(accounts.index), chosen
 
     log, letters = read_sheet_with_rows(roles["activity"])
-    src("activity", roles["activity"], sheet_names(roles["activity"])[0], letters)
+    src("activity", roles["activity"], None if is_csv(roles["activity"]) else sheet_names(roles["activity"])[0], letters)
     cols = ["id", "level", "type", "action", "from_", "to", "time", "user"]
     if log.empty:
         activity = pd.DataFrame(columns=cols + ["_row"])
@@ -214,4 +278,4 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
                             for row in [list(d.columns)] + d.values.tolist())
     defind_text = defind_text.replace("col0 | ", "")
 
-    return Inputs(raw, products, kpi, ineligible, ads, activity, _event_days(t), defind_text, sources)
+    return Inputs(raw, products, kpi, ineligible, ads, activity, _event_days(t) if t is not None else {}, defind_text, sources)

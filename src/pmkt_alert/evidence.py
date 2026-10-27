@@ -53,7 +53,7 @@ def _section(inputs, key: str, title: str, src: str, df: pd.DataFrame, filter_te
     rows_col = df["_row"] if "_row" in df.columns else []
     sample = df[[c for c in show + ["_row"] if c in df.columns]].head(ROW_LIMIT)
     return {
-        "key": key, "title": title, "source": f"{meta['file']} › {meta['sheet']}",
+        "key": key, "title": title, "source": f"{meta['file']} › {meta['sheet']}" if meta.get("sheet") else meta["file"],
         "columns_text": _columns_text(inputs, src, mapping), "filter": filter_text, "row_count": int(len(df)),
         "row_ranges": row_ranges(rows_col),
         "rows": [{k: _clean(v) for k, v in r.items()} for r in sample.to_dict("records")],

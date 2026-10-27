@@ -17,7 +17,7 @@ from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
 from .evidence import evidence
 from .export import export_pic
-from .loaders import ROLES, InputError, detect_inputs, load_inputs, role_of
+from .loaders import ROLES, TRACKER_REQUIRED, TRACKER_SHEETS, InputError, detect_inputs, input_files, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
 from .pipeline import result_to_json, run_rules
 from .prompts import STYLE_SCHEMA, TEAM_SCHEMA, style_prompt, team_prompt
@@ -124,7 +124,7 @@ class Api:
             raise RuntimeError("Chưa mở cửa sổ app")
         import webview
         picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True,
-                                                 file_types=("Excel (*.xlsx;*.xlsm)",))
+                                                 file_types=("Excel / CSV (*.xlsx;*.xlsm;*.csv)",))
         return {"paths": list(picked) if picked else []}
 
     def _on_drop(self, event: dict) -> None:
@@ -136,16 +136,16 @@ class Api:
 
     @safe
     def detect(self, paths: list[str]) -> dict:
-        """Classify picked files/folders. Earlier paths win per role, so the UI sends new picks first;
-        inside a folder the newest file wins. Partial picks are fine: missing roles are listed."""
+        """Classify picked files/folders (.xlsx or .csv). Earlier paths win per role, so the UI sends new picks
+        first; inside a folder the newest file wins. The Tracking slot is one workbook or its CSV tables
+        (raw_sso_us, Product Info, KPI[, INELIGIBLE ASIN]). Partial picks are fine: missing roles are listed."""
         files: list[Path] = []
         for p in map(Path, paths):
             if p.is_dir():
-                files += sorted((f for f in p.glob("*.xlsx") if not f.name.startswith("~$")),
-                                key=lambda f: f.stat().st_mtime, reverse=True)
+                files += sorted(input_files([p]), key=lambda f: f.stat().st_mtime, reverse=True)
             elif p.exists():
                 files.append(p)
-        roles, unknown = {}, []
+        found, unknown = {}, []
         for f in files:
             try:
                 role = role_of(f)
@@ -153,9 +153,22 @@ class Api:
                 role = None
             if role is None:
                 unknown.append(f.name)
-            elif role not in roles:
-                roles[role] = {"path": str(f), "name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1)}
-        return {"roles": roles, "missing": [r for r in ROLES if r not in roles], "unknown": unknown}
+            elif role not in found:
+                found[role] = f
+        info = lambda f: {"path": str(f), "name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1)}  # noqa: E731
+        roles = {r: info(f) for r, f in found.items() if r in ROLES}
+        parts = {t: found[t] for t in TRACKER_SHEETS if t in found}
+        tracker_missing = []
+        if parts and "tracker" not in roles:
+            tracker_missing = [TRACKER_SHEETS[t] for t in TRACKER_REQUIRED if t not in parts]
+            if not tracker_missing:
+                roles["tracker"] = {"path": str(parts["raw"]), "paths": [str(f) for f in parts.values()],
+                                    "name": " + ".join(f.name for f in parts.values()),
+                                    "size_mb": round(sum(f.stat().st_size for f in parts.values()) / 1e6, 1)}
+        elif parts and "tracker" in roles:  # CSV tables override the workbook's sheets
+            roles["tracker"]["paths"] = [roles["tracker"]["path"], *[str(f) for f in parts.values()]]
+        return {"roles": roles, "missing": [r for r in ROLES if r not in roles], "unknown": unknown,
+                "tracker_missing": tracker_missing}
 
     @safe
     def cancel_run(self) -> dict:

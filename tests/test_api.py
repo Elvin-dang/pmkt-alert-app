@@ -437,3 +437,19 @@ def test_stop_before_rules_cancels(tmp_path, synthetic_paths):
     api._cancel.set()  # stop pressed while files were loading
     out = api.run(paths(synthetic_paths))
     assert out == {"cancelled": True} and api.history()["runs"] == []
+
+
+def test_detect_csv_tables_fill_tracker_slot(tmp_path):
+    from factory import make_all_csv
+    files = make_all_csv(tmp_path / "c")
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    out = api.detect([str(files["raw"]), str(files["products"]), str(files["ads"])])
+    assert out["roles"]["ads"]["name"] == "ads_camp.csv"
+    assert "tracker" in out["missing"] and "KPI" in out["tracker_missing"]
+    full = api.detect([str(tmp_path / "c")])
+    t = full["roles"]["tracker"]
+    assert full["missing"] == [] and set(t["paths"]) == {str(files[k]) for k in ("raw", "products", "kpi")}
+    assert "raw_sso_us.csv" in t["name"]
+    run = Api(Store(tmp_path / "s2"), status_fn=OK, ask_fn=always_raise(ClaudeError("x"))).run(
+        [p for r in full["roles"].values() for p in r.get("paths", [r["path"]])])
+    assert "error" not in run and run["result"]["pl"]
