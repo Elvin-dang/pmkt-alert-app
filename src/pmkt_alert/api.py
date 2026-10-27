@@ -1,0 +1,263 @@
+"""Everything the UI can call (exposed to JavaScript via pywebview's js_api).
+Every public method returns JSON-serializable data and never raises."""
+import functools
+import json
+import traceback
+from datetime import date, datetime
+from pathlib import Path
+
+from . import __version__
+from .ai import generate, pic_rows
+from .aggregate import asin_map
+from .backtest import apply_approved, propose_from_feedback, proposals_from_review
+from .claude import ClaudeError, ask, check_status
+from .export import export_pic
+from .loaders import InputError, detect_inputs, load_inputs
+from .logic import LogicError, load_logic, version_from_name
+from .pipeline import result_to_json, run_rules
+from .prompts import STYLE_SCHEMA, style_prompt
+from .rules.actions import suggest_email_map
+from .store import Store
+from .updater import DEFAULT_REPO, apply_update, download_verified, is_newer, latest_release, recent_releases
+from .windows import Windows
+
+
+def safe(fn):
+    @functools.wraps(fn)
+    def wrapper(self, *a, **k):
+        try:
+            return fn(self, *a, **k)
+        except (InputError, LogicError, ClaudeError, ValueError, RuntimeError) as e:
+            return {"error": str(e)}
+        except Exception as e:  # never let a traceback reach the UI
+            self._log(traceback.format_exc())
+            return {"error": f"Lỗi không mong đợi: {e}"}
+    return wrapper
+
+
+class Api:
+    def __init__(self, store: Store, ask_fn=ask, status_fn=check_status, release_fn=latest_release,
+                 recent_fn=recent_releases):
+        self._store, self._ask, self._status = store, ask_fn, status_fn
+        self._release, self._recent = release_fn, recent_fn
+        self._window = None
+        self._inputs = None
+        self._paths: list[str] = []
+
+    # ------------------------------------------------------------- helpers
+    def _log(self, text: str) -> None:
+        with open(self._store.base / "error.log", "a", encoding="utf-8") as f:
+            f.write(f"--- {datetime.now().isoformat()}\n{text}\n")
+
+    def _progress(self, step: str, state: str, detail: str = "") -> None:
+        if self._window is not None:
+            self._window.evaluate_js(f"window.onProgress && onProgress({json.dumps(step)}, {json.dumps(state)}, {json.dumps(detail)})")
+
+    def _latest(self) -> dict:
+        runs = self._store.list_runs()
+        if not runs:
+            raise ValueError("Chưa có lần chạy nào")
+        return self._store.load_run(runs[0]["run_id"])
+
+    def _logic(self):
+        active = self._store.active_logic()
+        if not active:
+            raise ValueError("Chưa có file Alert_Logic")
+        return load_logic(active)
+
+    def _ensure_inputs(self):
+        if self._inputs is None:
+            paths = self._paths or self._store.get_settings().get("last_inputs", {}).get("paths", [])
+            if not paths:
+                raise ValueError("Chưa chọn file data")
+            self._paths = paths
+            self._inputs = load_inputs(detect_inputs([Path(p) for p in paths]))
+        return self._inputs
+
+    def _repo(self) -> str:
+        return self._store.get_settings().get("github_repo") or DEFAULT_REPO
+
+    # ------------------------------------------------------------- run
+    @safe
+    def detect(self, paths: list[str]) -> dict:
+        roles = detect_inputs([Path(p) for p in paths])
+        return {"roles": {r: {"path": str(p), "name": p.name, "size_mb": round(p.stat().st_size / 1e6, 1)}
+                          for r, p in roles.items()}}
+
+    @safe
+    def run(self, paths: list[str], as_of: str | None = None, use_claude: bool = True) -> dict:
+        self._progress("load", "running", "Đọc & làm sạch data")
+        roles = detect_inputs([Path(p) for p in paths])
+        inputs = load_inputs(roles)
+        self._inputs, self._paths = inputs, [str(p) for p in paths]
+        self._store.save_settings({"last_inputs": {"paths": self._paths}})
+        versions = [v for v, _ in self._store.logic_versions()]
+        if not versions or version_from_name(roles["logic"].name) > max(versions):
+            self._store.import_logic(roles["logic"])
+        logic = self._logic()
+        self._progress("load", "done", f"{len(inputs.raw):,} dòng raw · {len(inputs.ads):,} dòng ads_camp")
+
+        self._progress("rules", "running", "Tầng 0–4")
+        result = run_rules(inputs, logic, date.fromisoformat(as_of) if as_of else None)
+        rj = result_to_json(result)
+        rj["inputs"] = {
+            "raw": {"rows": len(inputs.raw), "last": str(inputs.raw["date"].max())},
+            "ads": {"rows": len(inputs.ads), "last": str(inputs.ads["date"].max())},
+            "activity": {"rows": len(inputs.activity), "users": int(inputs.activity["user"].nunique())},
+            "files": {r: p.name for r, p in roles.items()},
+        }
+        run_id = self._store.save_run(rj, None)
+        self._progress("rules", "done", f"{len(rj['pl'])} PL · {len(rj['camp'])} campaign")
+        ai = None
+        if use_claude:
+            self._progress("claude", "running", "Insight · To-do · Tin nhắn · Rà soát logic")
+            amap = asin_map(inputs.products, result.as_of)
+            l7d = Windows(result.as_of).l7d
+            inel = inputs.ineligible[(inputs.ineligible["date"] >= l7d[0]) & (inputs.ineligible["date"] <= l7d[1])]
+            inel = inel.merge(amap, on="asin")[["asin", "pl", "pic", "reason"]].drop_duplicates("asin")
+            ai = generate(rj, logic, self._store, inputs.event_days, inputs.defind_text,
+                          inel.to_dict("records"), ask_fn=self._ask)
+            proposals_from_review(ai["review"], logic, self._store, inputs, result.as_of)
+            self._store.update_run_ai(run_id, ai)
+            self._progress("claude", "done" if ai["claude_ok"] else "warn", ai["error"] or "")
+        return {"run_id": run_id, "result": rj, "ai": ai}
+
+    @safe
+    def results(self, run_id: str | None = None) -> dict:
+        return self._store.load_run(run_id) if run_id else self._latest()
+
+    @safe
+    def claude_status(self) -> dict:
+        return self._status().to_dict()
+
+    # ------------------------------------------------------------- feedback & review
+    @safe
+    def submit_feedback(self, item: dict) -> dict:
+        run = self._latest()
+        rows = {r["unit_id"]: r for r in run["result"]["pl"] + run["result"]["camp"]}
+        row = rows.get(item.get("unit_id"), {})
+        fid = self._store.add_feedback({**item, "run_id": run["run_id"],
+                                        "logic_version": run["result"]["logic_version"], "row": row})
+        fb = next(f for f in self._store.list_feedback() if f["id"] == fid)
+        try:
+            out = propose_from_feedback(fb, row, self._logic(), self._store, self._ensure_inputs(),
+                                        date.fromisoformat(run["result"]["as_of"]), ask_fn=self._ask)
+        except ClaudeError as e:
+            return {"feedback_id": fid, "error": f"Đã lưu góp ý, nhưng Claude chưa phân tích được: {e}"}
+        return {"feedback_id": fid, **out}
+
+    @safe
+    def review(self) -> dict:
+        runs = self._store.list_runs()
+        run = self._store.load_run(runs[0]["run_id"]) if runs else {}
+        return {"findings": ((run.get("ai") or {}).get("review") or []), "proposals": self._store.proposals(),
+                "feedback": self._store.list_feedback()}
+
+    @safe
+    def set_proposal(self, pid: str, status: str) -> dict:
+        if status not in ("approved", "rejected", "pending"):
+            raise ValueError("Trạng thái không hợp lệ")
+        self._store.set_proposal_status(pid, status)
+        return {"proposals": self._store.proposals()}
+
+    @safe
+    def apply_proposals(self) -> dict:
+        out = apply_approved(self._store, self._logic())
+        self._ensure_inputs()
+        run = self.run(self._paths)
+        return {**run, "logic_file": out.name}
+
+    # ------------------------------------------------------------- lessons & history
+    @safe
+    def lessons(self) -> dict:
+        return {"lessons": self._store.lessons()}
+
+    @safe
+    def delete_lesson(self, lid: str) -> dict:
+        self._store.delete_lesson(lid)
+        return {"lessons": self._store.lessons()}
+
+    @safe
+    def history(self) -> dict:
+        active = self._store.active_logic()
+        return {"runs": self._store.list_runs(),
+                "logic_versions": [{"version": v, "name": p.name, "active": p == active}
+                                   for v, p in self._store.logic_versions()]}
+
+    @safe
+    def set_active_logic(self, version: int) -> dict:
+        self._store.set_active_logic(int(version))
+        return self.history()
+
+    # ------------------------------------------------------------- style & settings
+    @safe
+    def get_style(self) -> dict:
+        return self._store.get_style()
+
+    @safe
+    def save_style(self, d: dict) -> dict:
+        self._store.save_style(d)
+        return self._store.get_style()
+
+    @safe
+    def add_style_sample(self, text: str) -> dict:
+        self._store.add_style_sample(text)
+        return self._store.get_style()
+
+    @safe
+    def preview_style(self) -> dict:
+        run = self._latest()
+        d = max(run["result"]["digest"], key=lambda x: x["camp_high"] + x["pl_high"])
+        rows = pic_rows(run["result"], d["pic"])
+        out = self._ask(style_prompt(self._store.get_style(), d, {"pl": rows["pl"][:5], "camp": rows["camp"][:8]}), STYLE_SCHEMA)
+        return {"slack": out["slack"], "pic": d["pic"]}
+
+    @safe
+    def get_settings(self) -> dict:
+        return self._store.get_settings()
+
+    @safe
+    def save_settings(self, d: dict) -> dict:
+        self._store.save_settings(d)
+        return self._store.get_settings()
+
+    @safe
+    def email_map_suggestions(self) -> dict:
+        saved = self._store.get_settings().get("email_map", {})
+        users = sorted({u for u in self._ensure_inputs().activity["user"].dropna().astype(str).str.strip().str.lower() if u})
+        pics = sorted({d["pic"] for d in self._latest()["result"]["digest"]})
+        suggested = suggest_email_map(users, pics)
+        return {"email_map": {u: saved.get(u) or suggested.get(u, "") for u in users}, "pics": pics}
+
+    # ------------------------------------------------------------- update & export
+    @safe
+    def check_update(self) -> dict:
+        repo = self._repo()
+        rel = self._release(repo)
+        return {"current": __version__, "repo": repo, "latest": rel.tag if rel else None,
+                "newer": bool(rel and is_newer(rel.tag, __version__)), "notes": rel.notes if rel else "",
+                "published": rel.published if rel else "",
+                "previous": [{"tag": r.tag, "notes": r.notes, "published": r.published} for r in self._recent(repo)][1:]
+                if rel else []}
+
+    @safe
+    def install_update(self) -> dict:
+        rel = self._release(self._repo())
+        if not rel or not is_newer(rel.tag, __version__):
+            raise ValueError("Không có bản cập nhật mới")
+        exe = download_verified(rel, self._store.base / "updates")
+        apply_update(exe)
+        if self._window is not None:
+            self._window.destroy()
+        return {"ok": True}
+
+    @safe
+    def export(self, pic: str, path: str | None = None) -> dict:
+        run = self._latest()
+        if path is None:
+            import webview
+            picked = self._window.create_file_dialog(webview.SAVE_DIALOG, save_filename=f"PMKT Alert - {pic}.xlsx")
+            if not picked:
+                return {"cancelled": True}
+            path = picked if isinstance(picked, str) else picked[0]
+        return {"path": str(export_pic(run["result"], run.get("ai"), pic, Path(path)))}
