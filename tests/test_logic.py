@@ -1,7 +1,7 @@
 import pytest
 
 from factory import make_logic
-from pmkt_alert.logic import LogicError, load_logic, version_from_name, write_logic_version
+from pmkt_alert.logic import load_logic, version_from_name, write_logic_version
 from pmkt_alert.xlsx import read_sheet
 
 
@@ -16,10 +16,10 @@ def test_loads_params_by_label_not_position(tmp_path):
     assert "pacing" in lg.tiers_text
 
 
-def test_missing_param_raises(tmp_path):
+def test_missing_param_is_reported_not_raised(tmp_path):
     p = make_logic(tmp_path / "x.xlsx", drop="min_clicks")
-    with pytest.raises(LogicError, match="min_clicks"):
-        load_logic(p)
+    lg = load_logic(p)
+    assert lg.params["min_clicks"] == 15 and any(i["code"] == "MISSING" and i["key"] == "min_clicks" for i in lg.issues)
 
 
 def test_version_from_name():
@@ -79,18 +79,18 @@ def _set_config(path, label_prefix, value):
     wb.save(path)
 
 
-def test_blank_threshold_gives_clear_error(tmp_path):
+def test_blank_threshold_is_reported_with_cell(tmp_path):
     p = make_logic(tmp_path / "Alert_Logic_System_Team_v3.xlsx")
     _set_config(p, "CUT/OPTIMIZE nếu ACoS camp", None)
-    with pytest.raises(LogicError, match=r"camp_cut.*Config!C\d+.*trống"):
-        load_logic(p)
+    i = next(i for i in load_logic(p).issues if i["key"] == "camp_cut")
+    assert i["code"] == "BLANK" and i["cell"].startswith("Config!C") and i["used"] == 1.15
 
 
-def test_formula_without_saved_value_gives_clear_error(tmp_path):
+def test_formula_without_saved_value_is_reported(tmp_path):
     p = make_logic(tmp_path / "x.xlsx")
     _set_config(p, "Sàn click tối thiểu", "=10+5")  # written by a tool: no cached result
-    with pytest.raises(LogicError, match=r"min_clicks.*công thức.*Excel"):
-        load_logic(p)
+    i = next(i for i in load_logic(p).issues if i["key"] == "min_clicks")
+    assert i["code"] == "FORMULA" and i["value"] == "=10+5" and "Excel" in i["message"]
 
 
 def test_threshold_text_formats_accepted(tmp_path):

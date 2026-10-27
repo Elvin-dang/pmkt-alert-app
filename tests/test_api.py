@@ -347,3 +347,43 @@ def test_picked_logic_file_is_used_even_with_other_name(tmp_path, synthetic_path
     assert all(c["min_clicks"] >= 99 for c in out["result"]["camp"])
     again = api.run([str(d)])  # same file again: no duplicate import, still v3
     assert again["result"]["logic_version"] == 3 and len(api.history()["logic_versions"]) == 2
+
+
+def _with_v3(tmp_path, synthetic_paths, **kw):
+    import shutil
+    from factory import make_logic_v3
+    d = tmp_path / "v3"
+    d.mkdir()
+    for p in synthetic_paths:
+        if "Alert_Logic" not in p.name:
+            shutil.copy(p, d / p.name)
+    make_logic_v3(d / "Alert_Logic_System_Team_v3.xlsx", **kw)
+    return d
+
+
+def test_run_completes_with_broken_logic_and_reports(tmp_path, synthetic_paths):
+    d = _with_v3(tmp_path, synthetic_paths, blank="Sàn click tối thiểu")
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("x")))
+    out = api.run([str(d)])
+    assert "error" not in out and out["result"]["logic_version"] == 3 and out["result"]["pl"]
+    codes = {(i["code"], i["key"]) for i in out["result"]["logic_issues"]}
+    assert ("BLANK", "min_clicks") in codes and ("MISSING", "gmv_pace_low") in codes
+    ev = out["ai"]["logic_eval"]  # no Claude: rule-based verdicts so nothing is lost
+    assert ev["by_claude"] is False and any(x["verdict"] == "change" for x in ev["items"])
+
+
+def test_claude_evaluates_logic_issues(tmp_path, synthetic_paths):
+    d = _with_v3(tmp_path, synthetic_paths, blank="Sàn click tối thiểu")
+    def ask_fn(p, s):
+        if "verdict_items" in s["properties"]:
+            return {"summary": "File dùng mô hình chấm điểm mới", "verdict_items": [
+                {"ref": 0, "verdict": "critical", "reason": "Sàn click trống", "fix": "Điền 15 vào ô", "suggested_value": "15"},
+                {"ref": 999, "verdict": "ignore", "reason": "x", "fix": "", "suggested_value": None}]}
+        return empty_for(s)
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=ask_fn)
+    out = api.run([str(d)])
+    ev = out["ai"]["logic_eval"]
+    assert ev["by_claude"] is True and ev["summary"].startswith("File dùng")
+    crit = [x for x in ev["items"] if x["verdict"] == "critical"]
+    assert len(crit) == 1 and crit[0]["issue"]["key"] == out["result"]["logic_issues"][0]["key"]
+    assert all(x["issue"] for x in ev["items"])  # unknown refs dropped

@@ -202,3 +202,39 @@ def make_all(dir_: Path, names: dict[str, str] | None = None) -> dict[str, Path]
     return {"tracker": make_tracker(d / names["tracker"]), "ads": make_ads(d / names["ads"]),
             "activity": make_activity(d / names["activity"]), "logic": make_logic(d / names["logic"]),
             "defind": make_defind(d / names["defind"])}
+
+
+def make_logic_v3(path: Path, blank: str | None = None, bad_matrix: bool = False) -> Path:
+    """Mimics the team's v3 layout: re-lettered sections, 'Giá trị' header values, a scoring model
+    instead of the 4 pacing thresholds, extra parameters the app does not use."""
+    rows = [[None, "CONFIG – mọi tham số", None], [None, "As-of date", None], [None, "Time gone", 0.6],
+            [None, "A. Phạm vi", None], [None, "Nhãn team được tracking", "Team X"],
+            [None, "B. Trọng số các yếu tố", "Giá trị"], [None, "w1 – TACoS vs target", 3], [None, "w2 – Department", 3],
+            [None, "D. Mốc điểm → action code", "Giá trị"], [None, "SCALE DOWN nếu điểm ≥", 50],
+            [None, "E. Chốt chặn & luật cứng", "Giá trị"], [None, '"Không chạy" nếu Spend pace <', 0.1],
+            [None, "Ngưỡng cạn budget (%Spend ≥)", 1],
+            [None, "F. Trend L7D vs P7D (ngưỡng thay đổi ±)", "Giá trị"], [None, "Spend", 0.2], [None, "ACoS", 0.25],
+            [None, "TACoS", 0.2], [None, "Sàn L7D Spend để xét trend ($)", 50],
+            [None, "G. Campaign (L7D)", "Giá trị"], [None, "CUT/OPTIMIZE nếu ACoS camp ÷ ACoS PL >", 1.2],
+            [None, "MAINTAIN/PUSH hoặc SCALE UP nếu ≤", 1], [None, "OPTIMIZE nếu ACoS camp ÷ ACoS PL >", 1.3],
+            [None, "Sàn click tối thiểu (L7D)", 15], [None, "Excess spend để lên HIGH ($, L7D)", 30],
+            [None, "H. Action log của PIC", "Giá trị"], [None, 'Cửa sổ "đã action gần đây" (ngày, gồm as-of)', 3],
+            [None, "Hạn follow-up = ngày action + (ngày)", 3], [None, '"Đang cải thiện" nếu ACoS L3D ≤ ACoS L7D ×', 0.9],
+            [None, "I. k = số order kỳ vọng (theo loại campaign)", "Giá trị"], [None, "SPS_PRODUCTS", 3],
+            [None, "SPS_BRANDS", 3], [None, "SPS_DISPLAY", 5],
+            [None, "J. Department (tự tính, không sửa)", "Giá trị"], [None, "Target GMV Dept", 1000]]
+    if blank:
+        for r in rows:
+            if r[1] and str(r[1]).startswith(blank):
+                r[2] = None
+    matrix = [["MA TRẬN"], [None], [None], ["Key (Spend|ACoS|TACoS)", "Spend", "ACoS", "TACoS", "Tín hiệu", "Label", "Hành động gợi ý"]]
+    for s in "UFD":
+        for a in "UFD":
+            for t in "UFD":
+                key = f"{s}|{a}|{t}"
+                label = MATRIX_LABELS.get(key)
+                if bad_matrix and key == "U|U|U":
+                    label = "REVIEW AD"  # typo
+                matrix.append([key, s, a, t, key, label, f"Gợi ý {key}" if label else None])
+    return write_xlsx(path, {"README_Flow": [[None, "README", None]], "Logic_Tiers": [["Mô hình chấm điểm v3"]],
+                             "Config": rows, "Matrix_PL": matrix})

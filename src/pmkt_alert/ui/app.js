@@ -141,7 +141,7 @@ async function useInputs(paths) {
   renderSlots();
 }
 window.onDropPaths = (paths) => { go("run"); useInputs(paths); };
-const STEPS = { load: "Đọc & làm sạch data", rules: "Tầng 0–4 – Data check · Pacing · Trend · Campaign · Action log", claude: "Claude – Insight · To-do · Tin nhắn · Rà soát logic" };
+const STEPS = { load: "Đọc & làm sạch data", logic: "Kiểm tra file logic", logic_eval: "Claude đánh giá lỗi file logic", rules: "Tầng 0–4 – Data check · Pacing · Trend · Campaign · Action log", claude: "Claude – Insight · To-do · Tin nhắn · Rà soát logic" };
 const STEP_STATE = {};
 window.onProgress = (step, state, detail) => {
   STEP_STATE[step] = { state, detail };
@@ -192,6 +192,7 @@ function renderResults() {
   const todos = mine ? mine.todos : [];
   body.innerHTML = `
     ${S.run.unreliable ? '<div class="warnbar"><svg class="i" aria-hidden="true"><use href="#alert"/></svg><b>CẢNH BÁO DATA</b> – xem tab Data trước khi action.</div>' : ""}
+    ${logicBanner()}
     <div class="grid g5" style="margin-top:12px">
       <div class="card kpi"><div class="lbl">PL HIGH (pacing)</div><div class="val high num">${d.pl_high}</div></div>
       <div class="card kpi"><div class="lbl">PL MED (pacing)</div><div class="val med num">${d.pl_med}</div></div>
@@ -208,6 +209,13 @@ function renderResults() {
     <div class="tabpanel ${tab === "t-insights" ? "on" : ""}" id="t-insights">${insightsHtml(mine)}</div>
     <div class="tabpanel ${tab === "t-data" ? "on" : ""}" id="t-data">${issues.length ? issues.map((i) => `<div class="todo"><span class="sev ${i.severity === "WARN" ? "MED" : "INFO"}">${i.severity === "WARN" ? "DATA" : "INFO"}</span><div><div class="t">${esc(i.title)}</div><div class="d">${esc(i.detail)}</div></div></div>`).join("") : '<div class="empty">Data ổn.</div>'}</div>`;
   S.origSlack = mine ? mine.slack : "";
+}
+function logicBanner() {
+  const errs = (S.run.logic_issues || []).filter((i) => i.hint === "error");
+  if (!errs.length) return "";
+  const crit = ((S.ai || {}).logic_eval?.items || []).filter((x) => x.verdict === "critical").length;
+  return `<div class="warnbar"><svg class="i" aria-hidden="true"><use href="#alert"/></svg><b>FILE LOGIC</b> – ${esc(S.run.logic_file || "")}: ${errs.length} lỗi, đang dùng giá trị dự phòng${crit ? ` · <b>${crit} nghiêm trọng</b>` : ""}.
+    <span style="flex:1"></span><button class="btn sm" data-goto="review">Xem hướng dẫn sửa</button></div>`;
 }
 function claudeMissing(mine) {
   const err = !S.ai ? "Lần chạy này không dùng Claude" : (mine && mine.error) || S.ai.error;
@@ -405,7 +413,8 @@ async function loadReview() {
   const r = await api.review();
   if (bad(r)) return;
   const pending = r.proposals.filter((p) => p.status === "pending");
-  $("#nav-review").textContent = pending.length; $("#nav-review").classList.toggle("hidden", !pending.length);
+  const crit = (r.logic_eval?.items || []).filter((x) => x.verdict === "critical").length;
+  $("#nav-review").textContent = pending.length + crit; $("#nav-review").classList.toggle("hidden", !(pending.length + crit));
   const findings = r.findings.length ? r.findings.map((f) => `<div class="finding">${sev(f.severity === "INFO" ? "INFO" : f.severity)}<div><b>${esc(f.title)}</b><div class="muted">${esc(f.detail)}</div></div><span class="muted">${f.kind === "param" ? "Tham số" : "Rule mới"}</span></div>`).join("") : '<div class="empty">Chưa có phát hiện (cần chạy với Claude).</div>';
   const fb = r.feedback.slice(-8).reverse();
   const fbHtml = fb.length ? fb.map((f) => `<div class="finding"><span class="sev INFO">${esc(f.status)}</span><div><b>“${esc(f.text || f.issue)}”</b><div class="muted">${esc(f.label || f.unit_id)}</div></div><span class="muted">${esc((f.created || "").slice(0, 10))}</span></div>`).join("") : '<div class="empty">Chưa có góp ý.</div>';
@@ -416,11 +425,35 @@ async function loadReview() {
       ? `<button class="btn sm primary" data-prop="${esc(p.id)}" data-status="approved"><svg class="i" aria-hidden="true"><use href="#check"/></svg>Duyệt</button> <button class="btn sm" data-prop="${esc(p.id)}" data-status="rejected">Bỏ</button>`
       : `${sev(p.status === "approved" ? "OK" : "LOW")} <button class="btn sm ghost" data-prop="${esc(p.id)}" data-status="pending">Hoàn tác</button>`}</td></tr>`).join("");
   const approved = r.proposals.filter((p) => p.status === "approved").length;
-  $("#review-body").innerHTML = `<div class="grid g2"><div><h2>Lỗ hổng phát hiện (lần chạy gần nhất)</h2>${findings}</div><div><h2>Góp ý của bạn</h2>${fbHtml}</div></div>
+  $("#review-body").innerHTML = `${logicCheckHtml(r)}<div class="grid g2"><div><h2>Lỗ hổng phát hiện (lần chạy gần nhất)</h2>${findings}</div><div><h2>Góp ý của bạn</h2>${fbHtml}</div></div>
     <h2 style="margin-top:16px">Đề xuất thay đổi</h2>
     ${props ? `<div class="tbl"><table><thead><tr><th>Tham số</th><th>Thay đổi</th><th>Lý do</th><th>Backtest 4 tuần</th><th></th></tr></thead><tbody>${props}</tbody></table></div>` : '<div class="empty">Chưa có đề xuất.</div>'}
     <div style="display:flex;gap:8px;margin-top:12px;align-items:center"><span class="muted">Đã duyệt: <b class="num">${approved}</b> thay đổi</span><span style="flex:1"></span>
     <button class="btn primary" id="apply" ${approved ? "" : "disabled"}>Tạo phiên bản logic mới & chạy lại</button></div>`;
+}
+
+const VERDICT = { critical: ["HIGH", "NGHIÊM TRỌNG"], change: ["MED", "NÊN SỬA"], ignore: ["INFO", "BỎ QUA ĐƯỢC"] };
+function logicCheckHtml(r) {
+  const ev = r.logic_eval;
+  if (!r.logic_issues || !r.logic_issues.length) return r.logic_file ? `<div class="card" style="margin-bottom:12px"><h2 style="margin:0">Kiểm tra file logic</h2><p class="muted" style="margin:6px 0 0">${esc(r.logic_file)}: không có lỗi.</p></div>` : "";
+  const unused = r.logic_issues.filter((i) => i.code === "UNUSED");
+  const items = (ev?.items || []).map((x) => {
+    const [cls, label] = VERDICT[x.verdict] || VERDICT.change, i = x.issue;
+    return `<div class="finding"><span class="sev ${cls}">${label}</span><div>
+      <b>${esc(i.label || i.key)}</b> <span class="muted num">${esc(i.cell || "chưa có dòng")}</span>
+      <div class="muted" style="font-size:12px">${esc(i.message)}${i.value ? ` · giá trị trong file: <code>${esc(i.value)}</code>` : ""}${i.used != null && i.used_from ? ` · đang dùng <b class="num">${esc(i.used)}</b> (${esc(i.used_from)})` : ""}</div>
+      <div style="margin-top:4px">${esc(x.reason)}</div>
+      ${x.fix ? `<div style="margin-top:4px"><b>Cách sửa:</b> ${esc(x.fix)}${x.suggested_value != null && x.suggested_value !== "" ? ` · gợi ý: <code>${esc(x.suggested_value)}</code>` : ""}</div>` : ""}
+    </div><span></span></div>`;
+  }).join("");
+  return `<div class="card" style="margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:8px"><h2 style="margin:0">Kiểm tra file logic</h2><span class="muted">${esc(r.logic_file || "")}</span><span style="flex:1"></span>
+      <span class="ai">${ev?.by_claude ? '<svg class="i" aria-hidden="true"><use href="#spark"/></svg>Claude đánh giá' : "Đánh giá tự động (không có Claude)"}</span></div>
+    ${ev?.summary ? `<p style="margin:8px 0">${esc(ev.summary)}</p>` : ""}
+    ${items || '<p class="muted">Không có lỗi cần sửa.</p>'}
+    ${unused.length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:13px">${unused.length} tham số trong file mà app chưa dùng</summary>
+      <table style="margin-top:6px"><tbody>${unused.map((i) => `<tr><td>${esc(i.label)}</td><td class="num muted">${esc(i.cell)}</td><td class="n">${esc(i.value ?? "")}</td></tr>`).join("")}</tbody></table></details>` : ""}
+  </div>`;
 }
 
 // ------------------------------------------------------------------ lessons & history
@@ -553,6 +586,8 @@ function wire() {
     const sortTh = e.target.closest("th[data-sort]");
     if (sortTh) { const k = sortTh.dataset.sort; S.f.dir = S.f.sort === k ? -S.f.dir : 1; S.f.sort = k; renderResults(); return; }
     if (e.target.closest("#rewrite")) { rewriteMessage(); return; }
+    const goto = e.target.closest("[data-goto]");
+    if (goto) { go(goto.dataset.goto); return; }
     const t = e.target.closest("[data-tab]");
     if (t) { S.tab = t.dataset.tab; renderResults(); return; }
     const row = e.target.closest("tr.expandable[data-pl]");

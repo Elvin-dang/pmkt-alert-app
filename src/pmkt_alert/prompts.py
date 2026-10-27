@@ -273,3 +273,41 @@ Dữ liệu để đối chiếu: {_j({"pl": rows["pl"], "camp": rows["camp"]})}
 Bản nháp: {_j({k: draft.get(k) for k in ("insights", "todos", "slack")})}
 
 Schema: {_j(INSIGHTS_SCHEMA)}"""
+
+
+LOGIC_EVAL_SCHEMA = {
+    "type": "object", "required": ["summary", "verdict_items"],
+    "properties": {
+        "summary": {"type": "string"},
+        "verdict_items": {"type": "array", "items": {
+            "type": "object", "required": ["ref", "verdict", "reason", "fix"],
+            "properties": {"ref": {"type": "integer"}, "verdict": {"enum": ["critical", "change", "ignore"]},
+                           "reason": {"type": "string"}, "fix": {"type": "string"},
+                           "suggested_value": {"type": ["string", "number", "null"]}}}},
+    },
+}
+
+
+def logic_eval_prompt(issues: list[dict], unused: list[str], logic: Logic) -> str:
+    listed = [{"ref": i, **{k: x.get(k) for k in ("code", "key", "label", "cell", "value", "used", "used_from", "message",
+                                                  "detail", "suggest", "range")}} for i, x in enumerate(issues)]
+    return f"""Bạn là người kiểm tra file cấu hình alert "{logic.path.name}" mà người dùng vừa sửa.
+App đọc các tham số trong sheet Config theo nhãn ở cột B. Lần chạy vẫn hoàn tất: tham số lỗi/thiếu đã được thay bằng
+giá trị dự phòng (cột used, nguồn used_from). Engine của app chạy theo mô hình rule của Ver 1:
+pacing (GMV/Spend pace, TACoS ÷ target) → trend L7D vs P7D (Matrix_PL) → campaign (ACoS camp ÷ ACoS PL, min clicks, excess) → action log.
+
+Với TỪNG vấn đề, quyết định:
+- "critical": kết quả có thể sai đáng kể nếu không sửa → hướng dẫn sửa cụ thể (ô nào, giá trị gợi ý, các bước).
+- "change": nên sửa nhưng kết quả hiện tại vẫn dùng được.
+- "ignore": bỏ qua được (VD: giá trị dự phòng hợp lý, hoặc tham số app không dùng).
+Nếu nhiều tham số app chưa dùng cho thấy file dùng MÔ HÌNH KHÁC (VD: chấm điểm có trọng số), nói rõ trong summary:
+app đang chạy theo mô hình nào, các tham số mới đang bị bỏ qua, và hệ quả cho người dùng.
+
+Chỉ trả về MỘT object JSON đúng schema, tiếng Việt, ngắn gọn, hướng dẫn từng bước cho người không rành Excel.
+"ref" là số ref của vấn đề trong danh sách.
+
+Vấn đề: {_j(listed)}
+Tham số trong file mà app chưa dùng ({len(unused)}): {_j(unused[:40])}
+Mô tả logic trong file (Logic_Tiers): {logic.tiers_text[:3000]}
+
+Schema: {_j(LOGIC_EVAL_SCHEMA)}"""

@@ -7,7 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import __version__
-from .ai import generate, offline, pic_rows
+from .ai import evaluate_logic, generate, offline, pic_rows
 from .aggregate import asin_map
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
 from .claude import ClaudeError, ask, check_status, grounded, open_login
@@ -24,6 +24,10 @@ from .rules.actions import suggest_email_map
 from .store import Store
 from .updater import DEFAULT_REPO, apply_update, download_verified, is_newer, latest_release, recent_releases
 from .windows import Windows
+
+
+def always_fail(prompt, schema):
+    raise ClaudeError("Claude Code chưa sẵn sàng")
 
 
 def safe(fn):
@@ -73,10 +77,18 @@ class Api:
         return self._store.load_run(runs[0]["run_id"])
 
     def _logic(self):
+        """Active logic; problems in it fall back to the newest other stored version that loads cleanly."""
         active = self._store.active_logic()
         if not active:
             raise ValueError("Chưa có file Alert_Logic")
-        return load_logic(active)
+        fallback = None
+        for _, p in reversed(self._store.logic_versions()):
+            if p != active:
+                cand = load_logic(p)
+                if not any(i["hint"] == "error" for i in cand.issues):
+                    fallback = cand
+                    break
+        return load_logic(active, fallback=fallback)
 
     def _ensure_inputs(self):
         if self._inputs is None:
@@ -150,14 +162,21 @@ class Api:
         picked = roles["logic"]
         same = self._store.base / "logic" / picked.name
         if not (same.exists() and same.read_bytes() == picked.read_bytes()):
-            load_logic(picked)  # validate before importing: a broken file must not become active
-            self._store.import_logic(picked)
+            self._store.import_logic(picked)  # problems inside it are reported, never block the run
         logic = self._logic()
+        rank = {"error": 0, "warn": 1, "info": 2}
+        logic_issues = sorted(logic.issues, key=lambda i: rank[i["hint"]])
+        errs = sum(i["hint"] == "error" for i in logic_issues)
+        self._progress("logic", "warn" if errs else "done",
+                       f"{logic.path.name}: {errs} lỗi (đã dùng giá trị dự phòng), "
+                       f"{sum(i['code'] == 'UNUSED' for i in logic_issues)} tham số app chưa dùng" if logic_issues else logic.path.name)
         self._progress("load", "done", f"{len(inputs.raw):,} dòng raw · {len(inputs.ads):,} dòng ads_camp")
 
         self._progress("rules", "running", "Tầng 0–4")
         result = run_rules(inputs, logic, date.fromisoformat(as_of) if as_of else None)
         rj = result_to_json(result)
+        rj["logic_issues"] = logic_issues
+        rj["logic_file"] = logic.path.name
         rj["inputs"] = {
             "raw": {"rows": len(inputs.raw), "last": str(inputs.raw["date"].max())},
             "ads": {"rows": len(inputs.ads), "last": str(inputs.ads["date"].max()),
@@ -171,6 +190,7 @@ class Api:
         status = self._status() if use_claude else None
         if use_claude and status.level != "ok":
             ai = offline(rj, status.error or "Claude Code chưa sẵn sàng")
+            ai["logic_eval"] = evaluate_logic(logic_issues, logic, ask_fn=always_fail)
             self._store.update_run_ai(run_id, ai)
             self._progress("claude", "warn", ai["error"])
         elif use_claude:
@@ -183,6 +203,9 @@ class Api:
             inel = inel.merge(amap, on="asin")[["asin", "pl", "pic", "reason"]].drop_duplicates("asin")
             ai = generate(rj, logic, self._store, inputs.event_days, inputs.defind_text,
                           inel.to_dict("records"), ask_fn=self._ask, careful=careful)
+            self._progress("logic_eval", "running", "Claude đánh giá các vấn đề trong file logic")
+            ai["logic_eval"] = evaluate_logic(logic_issues, logic, ask_fn=self._ask)
+            self._progress("logic_eval", "done", ai["logic_eval"]["summary"][:120])
             self._store.update_run_ai(run_id, ai)
             try:
                 proposals_from_review(ai["review"], logic, self._store, inputs, result.as_of)
@@ -297,8 +320,14 @@ class Api:
     def review(self) -> dict:
         runs = self._store.list_runs()
         run = self._store.load_run(runs[0]["run_id"]) if runs else {}
-        return {"findings": ((run.get("ai") or {}).get("review") or []), "proposals": self._store.proposals(),
-                "feedback": self._store.list_feedback()}
+        res, ai = run.get("result") or {}, run.get("ai") or {}
+        issues = res.get("logic_issues") or []
+        logic_eval = ai.get("logic_eval")
+        if issues and not logic_eval:  # run without Claude: still show rule-based verdicts
+            logic_eval = evaluate_logic(issues, load_logic(self._store.active_logic()), ask_fn=always_fail)
+        return {"findings": ai.get("review") or [], "proposals": self._store.proposals(),
+                "feedback": self._store.list_feedback(), "logic_issues": issues, "logic_eval": logic_eval,
+                "logic_file": res.get("logic_file")}
 
     @safe
     def set_proposal(self, pid: str, status: str) -> dict:

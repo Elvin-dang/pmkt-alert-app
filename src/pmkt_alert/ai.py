@@ -10,8 +10,8 @@ from datetime import date
 
 from .claude import ClaudeError, ask, filter_grounded, grounded
 from .logic import Logic, valid_change
-from .prompts import (CAMP_FIELDS, INSIGHTS_SCHEMA, PL_FIELDS, REVIEW_SCHEMA, critic_prompt, insights_prompt,
-                      review_prompt)
+from .prompts import (CAMP_FIELDS, INSIGHTS_SCHEMA, LOGIC_EVAL_SCHEMA, PL_FIELDS, REVIEW_SCHEMA, critic_prompt,
+                      insights_prompt, logic_eval_prompt, review_prompt)
 from .scorecard import scorecard
 from .store import Store
 from .windows import Windows
@@ -191,3 +191,26 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
         per_pic = dict(pool.map(one_pic, result_json["digest"]))
         findings = review_future.result()
     return {"claude_ok": not errors, "error": errors[0] if errors else None, "per_pic": per_pic, "review": findings}
+
+
+def evaluate_logic(issues: list[dict], logic: Logic, ask_fn=ask) -> dict:
+    """Judge each problem in the logic file: critical (fix it) / change / ignore, with fix guidance.
+    Without Claude, a rule-based verdict is returned so the report is never empty."""
+    real = [i for i in issues if i["hint"] != "info"]
+    unused = [i["label"] for i in issues if i["code"] == "UNUSED"]
+    plain = {"items": [{"issue": i, "verdict": "change" if i["hint"] == "error" else "ignore",
+                        "reason": i["message"] + (f" – đang dùng {i['used']} ({i['used_from']})" if i.get("used") is not None and i.get("used_from") else ""),
+                        "fix": f"Mở {logic.path.name}, sửa ô {i['cell']}" if i.get("cell") else f"Thêm dòng '{i['label']}' vào sheet Config",
+                        "suggested_value": i.get("suggest") or (None if i.get("used") is None else str(i["used"]))} for i in real],
+             "summary": (f"{len(real)} vấn đề cần xem" if real else "Không có lỗi") + (f"; {len(unused)} tham số app chưa dùng." if unused else "."),
+             "by_claude": False}
+    if not real and not unused:
+        return plain
+    try:
+        out = _ask_twice(ask_fn, logic_eval_prompt(real, unused, logic), LOGIC_EVAL_SCHEMA)
+    except Exception:
+        return plain
+    items = [{"issue": real[v["ref"]], **{k: v.get(k) for k in ("verdict", "reason", "fix", "suggested_value")}}
+             for v in out["verdict_items"] if 0 <= v["ref"] < len(real)]
+    rank = {"critical": 0, "change": 1, "ignore": 2}
+    return {"items": sorted(items, key=lambda x: rank[x["verdict"]]), "summary": out["summary"], "by_claude": True}
