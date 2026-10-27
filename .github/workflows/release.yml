@@ -15,7 +15,11 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q
       - name: Stamp version
-        run: python -c "import sys; open('src/pmkt_alert/_version.py','w').write('VERSION = \"%s\"\n' % sys.argv[1].lstrip('v'))" ${{ github.ref_name }}
+        shell: bash
+        run: |
+          v="${{ github.ref_name }}"
+          echo "VERSION = \"${v#v}\"" > src/pmkt_alert/_version.py
+          cat src/pmkt_alert/_version.py
       - name: Build exe
         env:
           APP_NAME: PMKT-Alert-${{ github.ref_name }}
@@ -26,7 +30,10 @@ jobs:
           $p = Start-Process -FilePath $exe -ArgumentList "--selfcheck" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "selfcheck failed: UI not bundled" }
       - name: Checksum
-        run: python -c "import hashlib,pathlib; p=next(pathlib.Path('dist').glob('*.exe')); pathlib.Path(str(p)+'.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n')"
+        shell: bash
+        run: |
+          cd dist
+          for f in *.exe; do sha256sum "$f" | sed 's/ \*/  /' > "$f.sha256"; cat "$f.sha256"; done
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
