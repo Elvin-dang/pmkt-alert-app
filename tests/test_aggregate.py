@@ -52,3 +52,22 @@ def test_campaign_split_by_pl(loaded):
 
 def test_default_as_of(loaded):
     assert default_as_of(loaded) == date(2026, 10, 19)
+
+
+def test_zero_activity_campaign_rows_dropped_and_camp_spend_keeps_pl(loaded):
+    import pandas as pd
+    w = Windows(date(2026, 10, 19))
+    extra = pd.DataFrame([
+        dict(date=date(2026, 10, 18), type="SPS_PRODUCTS", campaign_id="7", campaign="Zero", asin="B000000006",
+             spend=0.0, clicks=0.0, sales=0.0, orders=0.0),
+    ])
+    ads = pd.concat([loaded.ads, extra], ignore_index=True)
+    c = camp_frame(ads, asin_map(loaded.products, w.as_of), w)
+    assert "7" not in set(c.campaign_id)
+
+    raw_without_delta = loaded.raw[loaded.raw.asin != "B000000006"]
+    spend = pd.DataFrame([dict(extra.iloc[0], spend=5.0, campaign_id="8")])
+    inp = type(loaded)(raw_without_delta, loaded.products, loaded.kpi, loaded.ineligible,
+                       pd.concat([loaded.ads, spend], ignore_index=True), loaded.activity)
+    pl = pl_frame(inp, asin_map(loaded.products, w.as_of), w)
+    assert "PL Delta" in set(pl.pl)

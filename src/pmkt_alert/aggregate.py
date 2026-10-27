@@ -52,7 +52,7 @@ def pl_frame(inputs, amap: pd.DataFrame, win: Windows) -> pd.DataFrame:
         lambda s: s[s != NO_PIC].mode().iloc[0] if (s != NO_PIC).any() else NO_PIC)
     pl["pic"] = pics.reindex(pl.index).fillna(NO_PIC)
     keep = (pl[["target_gmv", "target_spend", "gmv_mtd", "spend_mtd", "l7d_spend", "p7d_spend",
-                "l7d_gmv", "p7d_gmv"]] != 0).any(axis=1)
+                "l7d_gmv", "p7d_gmv", "camp_l7d_spend"]] != 0).any(axis=1)
     pl = pl[keep].rename_axis("pl").reset_index()
     cols = ["pl", "pic", "target_gmv", "target_spend", "target_tacos", "gmv_mtd", "spend_mtd", "l7d_spend",
             "p7d_spend", "l7d_ads_gmv", "p7d_ads_gmv", "l7d_gmv", "p7d_gmv", "camp_l7d_spend", "camp_l7d_clicks",
@@ -74,6 +74,8 @@ def camp_frame(ads: pd.DataFrame, amap: pd.DataFrame, win: Windows) -> pd.DataFr
         window(win.p7d, {"spend": "p7d_spend", "sales": "p7d_sales"}),
         window(win.l3d, {"spend": "l3d_spend", "sales": "l3d_sales"}),
     ], axis=1).fillna(0.0).reset_index()
+    metrics = ["l7d_spend", "l7d_clicks", "l7d_sales", "l7d_orders", "p7d_spend", "p7d_sales"]
+    out = out[(out[metrics] != 0).any(axis=1)].reset_index(drop=True)
     latest = recent.sort_values("date").groupby("campaign_id").last()
     out["campaign"] = out["campaign_id"].map(latest["campaign"])
     out["type"] = out["campaign_id"].map(latest["type"])
