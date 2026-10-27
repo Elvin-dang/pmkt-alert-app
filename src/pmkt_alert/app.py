@@ -15,6 +15,7 @@ def main() -> None:
     if "--selfcheck" in sys.argv:  # used by CI on the built exe
         sys.exit(0 if ui_path().exists() else 1)
     import webview
+    from webview.dom import DOMEventHandler
 
     from pmkt_alert.api import Api
     from pmkt_alert.store import Store, default_base
@@ -23,6 +24,12 @@ def main() -> None:
     window = webview.create_window("PMKT Alert", url=str(ui_path()), js_api=api, width=1440, height=900,
                                    min_size=(1100, 700))
     api._window = window
+
+    def on_loaded():
+        # Dropped files' full paths are only exposed to a Python-side drop handler.
+        window.dom.document.events.drop += DOMEventHandler(api._on_drop, prevent_default=True)
+
+    window.events.loaded += on_loaded
     webview.start()
 
 

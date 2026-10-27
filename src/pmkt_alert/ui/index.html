@@ -49,7 +49,7 @@
 
 <section id="run" class="on">
   <h1>Chạy dữ liệu</h1>
-  <p class="sub">Chọn thư mục (hoặc kéo thả) chứa 3 file data + 2 file setting. App nhận diện file theo nội dung, không theo tên.</p>
+  <p class="sub">Kéo thả file .xlsx vào cửa sổ, hoặc chọn file / thư mục. Có thể thêm từng file – app nhận diện theo nội dung, không theo tên.</p>
   <div class="grid g2">
     <div class="card" id="drop-zone">
       <h2>Data (cập nhật hằng ngày)</h2>
@@ -62,6 +62,7 @@
         <label for="as-of" style="margin:0">As-of</label><input type="date" id="as-of" style="width:150px">
         <label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:500;color:var(--fg)"><input type="checkbox" id="use-claude" checked> Dùng Claude</label>
         <span style="flex:1"></span>
+        <button class="btn" id="pick-files"><svg class="i" aria-hidden="true"><use href="#file"/></svg>Chọn file…</button>
         <button class="btn" id="pick"><svg class="i" aria-hidden="true"><use href="#folder"/></svg>Chọn thư mục…</button>
         <button class="btn primary" id="run-btn" disabled><svg class="i" aria-hidden="true"><use href="#play"/></svg>Chạy</button>
       </div>

@@ -98,16 +98,23 @@ function slot(role) {
 function renderSlots() {
   $("#slots-data").innerHTML = ["tracker", "ads", "activity"].map(slot).join("");
   $("#slots-setting").innerHTML = ["logic", "defind"].map(slot).join("");
-  $("#run-btn").disabled = !S.roles;
+  $("#run-btn").disabled = !S.roles || ROLES.some((role) => !S.roles[role]);
 }
+const ROLES = ["tracker", "ads", "activity", "logic", "defind"];
 async function useInputs(paths) {
   if (!paths || !paths.length) return;
-  const r = await api.detect(paths);
-  $("#input-error").textContent = r.error || "";
-  S.roles = r.error ? null : r.roles;
-  S.paths = r.error ? [] : Object.values(r.roles).map((x) => x.path);
+  // New picks go first so they replace an earlier file of the same role.
+  const r = await api.detect([...paths, ...S.paths]);
+  if (bad(r)) return;
+  S.roles = r.roles;
+  S.paths = Object.values(r.roles).map((x) => x.path);
+  const msgs = [];
+  if (r.missing.length) msgs.push("Còn thiếu: " + r.missing.map((m) => ROLE_NAME[m]).join(", "));
+  if (r.unknown.length) msgs.push("Không nhận ra: " + r.unknown.join(", "));
+  $("#input-error").textContent = msgs.join(" · ");
   renderSlots();
 }
+window.onDropPaths = (paths) => { go("run"); useInputs(paths); };
 const STEPS = { load: "Đọc & làm sạch data", rules: "Tầng 0–4 – Data check · Pacing · Trend · Campaign · Action log", claude: "Claude – Insight · To-do · Tin nhắn · Rà soát logic" };
 const STEP_STATE = {};
 window.onProgress = (step, state, detail) => {
@@ -369,15 +376,13 @@ function wire() {
   $("#theme").onclick = () => { const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; applyTheme(t); store("theme", t); };
   $("#cc-recheck").onclick = $("#cc-recheck2").onclick = checkClaude;
   $("#pick").onclick = async () => { const r = await api.pick_folder(); if (!bad(r) && r.paths) useInputs(r.paths); };
+  $("#pick-files").onclick = async () => { const r = await api.pick_files(); if (!bad(r) && r.paths) useInputs(r.paths); };
   $("#run-btn").onclick = doRun;
   const zone = document.body;
   zone.addEventListener("dragover", (e) => { e.preventDefault(); $("#drop-zone").classList.add("drop"); });
   zone.addEventListener("dragleave", () => $("#drop-zone").classList.remove("drop"));
-  zone.addEventListener("drop", (e) => {
-    e.preventDefault(); $("#drop-zone").classList.remove("drop");
-    const paths = [...e.dataTransfer.files].map((f) => f.pywebviewFullPath).filter(Boolean);
-    if (paths.length) { go("run"); useInputs(paths); } else toast("Không đọc được đường dẫn file – dùng “Chọn thư mục…”.", true);
-  });
+  // Paths of dropped files arrive from the native handler via window.onDropPaths.
+  zone.addEventListener("drop", (e) => { e.preventDefault(); $("#drop-zone").classList.remove("drop"); });
   $("#pic").onchange = (e) => { S.pic = e.target.value; S.open.clear(); renderResults(); };
   $("#copy-slack").onclick = copySlack;
   $("#export").onclick = async () => { if (!S.pic) return; const r = await api.export(S.pic, null, S.runId); if (!bad(r) && r.path) toast("Đã xuất: " + r.path); };

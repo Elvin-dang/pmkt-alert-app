@@ -152,3 +152,55 @@ def test_export_and_feedback_use_viewed_run(tmp_path, synthetic_paths):
     assert fb["run_id"] == old["run_id"] and fb["row"]["unit_id"] == unit
     out = api.export("PIC A", str(tmp_path / "a.xlsx"), old["run_id"])
     assert out["run_id"] == old["run_id"]
+
+
+class FakeWindow:
+    def __init__(self, picked=None):
+        self.picked, self.js, self.dialogs = picked, [], []
+
+    def create_file_dialog(self, dialog_type, **kw):
+        self.dialogs.append((dialog_type, kw))
+        return self.picked
+
+    def evaluate_js(self, code):
+        self.js.append(code)
+
+
+def test_detect_partial_lists_missing(tmp_path, synthetic_paths):
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    two = [str(p) for p in synthetic_paths if p.name in ("ads.xlsx", "defind.xlsx")]
+    out = api.detect(two)
+    assert set(out["roles"]) == {"ads", "defind"} and set(out["missing"]) == {"tracker", "activity", "logic"}
+    assert out["unknown"] == []
+
+
+def test_detect_new_pick_replaces_same_role_and_flags_unknown(tmp_path, synthetic_paths):
+    import shutil
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    newer = tmp_path / "ads_new.xlsx"
+    shutil.copy(next(p for p in synthetic_paths if p.name == "ads.xlsx"), newer)
+    junk = tmp_path / "notes.xlsx"
+    from factory import write_xlsx
+    write_xlsx(junk, {"Sheet": [["a"], [1]]})
+    out = api.detect([str(newer), str(junk)] + [str(p) for p in synthetic_paths])  # new picks first
+    assert out["roles"]["ads"]["name"] == "ads_new.xlsx" and out["missing"] == []
+    assert out["unknown"] == ["notes.xlsx"]
+
+
+def test_pick_files_dialog(tmp_path):
+    import webview
+    api = Api(Store(tmp_path), status_fn=OK)
+    api._window = FakeWindow(picked=("/a/x.xlsx", "/a/y.xlsx"))
+    assert api.pick_files() == {"paths": ["/a/x.xlsx", "/a/y.xlsx"]}
+    kind, kw = api._window.dialogs[0]
+    assert kind == webview.FileDialog.OPEN and kw["allow_multiple"] is True and "*.xlsx" in kw["file_types"][0]
+    api._window.picked = None
+    assert api.pick_files() == {"paths": []}
+
+
+def test_drop_handler_sends_full_paths_to_ui(tmp_path):
+    api = Api(Store(tmp_path), status_fn=OK)
+    api._window = FakeWindow()
+    api._on_drop({"dataTransfer": {"files": [{"name": "a.xlsx", "pywebviewFullPath": "/d/a.xlsx"},
+                                              {"name": "b.txt"}]}})
+    assert api._window.js == ['window.onDropPaths && onDropPaths(["/d/a.xlsx"])']

@@ -12,7 +12,7 @@ from .aggregate import asin_map
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
 from .claude import ClaudeError, ask, check_status
 from .export import export_pic
-from .loaders import InputError, detect_inputs, load_inputs
+from .loaders import ROLES, InputError, detect_inputs, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
 from .pipeline import result_to_json, run_rules
 from .prompts import STYLE_SCHEMA, style_prompt
@@ -83,14 +83,47 @@ class Api:
         if self._window is None:
             raise RuntimeError("Chưa mở cửa sổ app")
         import webview
-        picked = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        picked = self._window.create_file_dialog(webview.FileDialog.FOLDER)
         return {"paths": list(picked) if picked else []}
 
     @safe
+    def pick_files(self) -> dict:
+        if self._window is None:
+            raise RuntimeError("Chưa mở cửa sổ app")
+        import webview
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True,
+                                                 file_types=("Excel (*.xlsx;*.xlsm)",))
+        return {"paths": list(picked) if picked else []}
+
+    def _on_drop(self, event: dict) -> None:
+        """Native drop handler (registered in app.py): only Python sees the dropped files' full paths."""
+        files = (event.get("dataTransfer") or {}).get("files", [])
+        paths = [f["pywebviewFullPath"] for f in files if f.get("pywebviewFullPath")]
+        if paths and self._window is not None:
+            self._window.evaluate_js(f"window.onDropPaths && onDropPaths({json.dumps(paths)})")
+
+    @safe
     def detect(self, paths: list[str]) -> dict:
-        roles = detect_inputs([Path(p) for p in paths])
-        return {"roles": {r: {"path": str(p), "name": p.name, "size_mb": round(p.stat().st_size / 1e6, 1)}
-                          for r, p in roles.items()}}
+        """Classify picked files/folders. Earlier paths win per role, so the UI sends new picks first;
+        inside a folder the newest file wins. Partial picks are fine: missing roles are listed."""
+        files: list[Path] = []
+        for p in map(Path, paths):
+            if p.is_dir():
+                files += sorted((f for f in p.glob("*.xlsx") if not f.name.startswith("~$")),
+                                key=lambda f: f.stat().st_mtime, reverse=True)
+            elif p.exists():
+                files.append(p)
+        roles, unknown = {}, []
+        for f in files:
+            try:
+                role = role_of(f)
+            except Exception:
+                role = None
+            if role is None:
+                unknown.append(f.name)
+            elif role not in roles:
+                roles[role] = {"path": str(f), "name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1)}
+        return {"roles": roles, "missing": [r for r in ROLES if r not in roles], "unknown": unknown}
 
     @safe
     def run(self, paths: list[str], as_of: str | None = None, use_claude: bool = True) -> dict:

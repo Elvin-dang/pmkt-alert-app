@@ -46,7 +46,7 @@ def _first_row(path: Path) -> list[str]:
     return [str(v).strip() for v in row if v is not None]
 
 
-def _role_of(path: Path) -> str | None:
+def role_of(path: Path) -> str | None:
     sheets = set(sheet_names(path))
     if {"raw_sso_us", "Product Info", "KPI"} <= sheets:
         return "tracker"
@@ -71,7 +71,7 @@ def detect_inputs(paths: list[Path]) -> dict[str, Path]:
         if f.name.startswith("~$"):
             continue
         try:
-            role = _role_of(f)
+            role = role_of(f)
         except Exception:
             continue
         if role:
