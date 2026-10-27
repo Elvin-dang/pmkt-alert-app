@@ -13,7 +13,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
-      - run: pytest -q
+      - name: Tests
+        shell: bash
+        run: pytest -q --junitxml=report.xml || { python scripts/junit_annotate.py report.xml; exit 1; }
       - name: Release notes from CHANGELOG.md (fails if this version has no entry)
         shell: bash
         run: PYTHONIOENCODING=utf-8 python -m pmkt_alert.changelog "${{ github.ref_name }}" > notes.md && cat notes.md

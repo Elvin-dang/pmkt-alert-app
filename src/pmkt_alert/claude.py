@@ -81,7 +81,11 @@ def cancel_all() -> None:
         for p in list(_ACTIVE):
             _KILLED.add(p)
             try:
-                p.kill()
+                if sys.platform == "win32":  # claude.cmd → node: kill the whole tree or the pipes stay open
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True,
+                                   creationflags=subprocess.CREATE_NO_WINDOW)
+                else:
+                    p.kill()
             except OSError:
                 pass
 

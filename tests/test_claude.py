@@ -1,4 +1,5 @@
 import json
+import sys
 import subprocess
 
 import pytest
@@ -199,6 +200,7 @@ def test_numbers_inside_names_and_units_are_ignored():
     assert not grounded("excess $61.99", rows)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="uses a POSIX shebang script as a fake claude")
 def test_cancel_all_kills_running_claude(tmp_path, monkeypatch):
     import sys
     import threading
@@ -222,3 +224,24 @@ def test_cancel_all_kills_running_claude(tmp_path, monkeypatch):
     t.join(10)
     assert not t.is_alive() and time.monotonic() - t0 < 8
     assert "dừng" in str(err["e"]).lower() and err["e"].retryable is False
+
+
+def test_cancel_kills_process_tree_on_windows(monkeypatch):
+    """npm installs claude.cmd → a node child holds the pipes; Stop must kill the whole tree."""
+    calls = []
+
+    class P:
+        pid = 4242
+
+        def kill(self):
+            calls.append("kill")
+    monkeypatch.setattr(claude_mod.sys, "platform", "win32")
+    monkeypatch.setattr(claude_mod.subprocess, "run", lambda args, **kw: calls.append(args))
+    monkeypatch.setattr(claude_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    claude_mod._ACTIVE.add(P())
+    try:
+        claude_mod.cancel_all()
+    finally:
+        claude_mod._ACTIVE.clear()
+        claude_mod._KILLED.clear()
+    assert ["taskkill", "/F", "/T", "/PID", "4242"] in calls
