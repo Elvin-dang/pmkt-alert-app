@@ -31,6 +31,18 @@ FEEDBACK_SCHEMA = {
                    "proposed_value": {"type": ["number", "string", "null"]}, "rationale": {"type": "string"},
                    "lesson_text": {"type": ["string", "null"]}},
 }
+TEAM_SCHEMA = {
+    "type": "object", "required": ["summary", "highlights", "improve"],
+    "properties": {
+        "summary": {"type": "string"},
+        "highlights": {"type": "array", "items": {"type": "object", "required": ["pic", "metric", "text"],
+                                                   "properties": {"pic": {"type": "string"}, "metric": {"type": "string"},
+                                                                  "text": {"type": "string"}}}},
+        "improve": {"type": "array", "items": {"type": "object", "required": ["pic", "metric", "text", "suggestion"],
+                                                "properties": {"pic": {"type": "string"}, "metric": {"type": "string"},
+                                                               "text": {"type": "string"}, "suggestion": {"type": "string"}}}},
+    },
+}
 STYLE_SCHEMA = {"type": "object", "required": ["slack"], "properties": {"slack": {"type": "string"}}}
 
 PL_FIELDS = ["unit_id", "pl", "pacing_action", "pacing_sev", "pacing_reason", "target_gmv", "target_spend", "gmv_mtd",
@@ -191,3 +203,36 @@ Tổng quan: {_j(digest_row)}
 Dữ liệu: {_j(rows)}
 
 Schema: {_j(STYLE_SCHEMA)}"""
+
+
+def team_prompt(scorecard: dict, weekly: list[dict], runs: list[dict]) -> str:
+    metrics = "\n".join(f"- {m['key']}: {m['label']} ({'cao tốt' if m['higher_better'] else 'thấp tốt'})"
+                         for m in scorecard["metrics"])
+    pics = [{"pic": p["pic"], "rank": p["rank"], "total": p["total"], "values": p["values"], "scores": p["scores"]}
+            for p in scorecard["pics"]]
+    return f"""Bạn là trưởng nhóm Performance Marketing Amazon, nhận xét hiệu quả của từng PIC (as-of {scorecard['as_of']}).
+Mỗi PIC được đo so với target của chính họ; điểm 0–100 là xếp hạng tương đối giữa các PIC (100 = tốt nhất).
+
+QUY TẮC BẮT BUỘC:
+- Chỉ trả về MỘT object JSON đúng schema, tiếng Việt, giọng xây dựng, công bằng (không chê bai cá nhân).
+- Mọi con số phải lấy NGUYÊN từ dữ liệu bên dưới (có thể làm tròn hoặc đổi tỉ lệ sang %). Không tự tính số mới.
+- "metric" phải là một key trong danh sách chỉ số.
+- Dựa vào xu hướng theo tuần để nói ai đang tiến bộ / đi xuống, không chỉ ảnh chụp hôm nay.
+- PIC "{NO_PIC_LABEL}" là nhóm PL chưa gán người: chỉ nhắc nếu cần gán PIC, không chấm điểm.
+
+Viết:
+- summary: 2–3 câu tổng quan đội.
+- highlights: 2–4 điểm mạnh nổi bật (ai, chỉ số nào, vì sao).
+- improve: mỗi PIC có điểm yếu rõ ràng → 1 mục: chỉ số cần cải thiện, bằng chứng số, gợi ý hành động cụ thể.
+
+Chỉ số:
+{metrics}
+
+Scorecard: {_j(pics)}
+Theo tuần (GMV, spend ads, TACoS, ACoS): {_j(weekly)}
+Lịch sử các lần chạy (số alert HIGH, excess theo PIC): {_j(runs[-10:])}
+
+Schema: {_j(TEAM_SCHEMA)}"""
+
+
+NO_PIC_LABEL = "Chưa có PIC"

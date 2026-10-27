@@ -180,3 +180,14 @@ td.acts .fb+.fb{margin-left:4px}
 #ev table td{padding:4px 8px}
 .evsec{border:1px solid var(--border);border-radius:8px;padding:8px 10px;margin-bottom:8px}
 .evsec summary{cursor:pointer;font-size:13px}
+
+.chartbox{position:relative;height:280px}
+.chartbox.tall{height:320px}
+.scorecell{display:flex;align-items:center;gap:6px;justify-content:flex-end}
+.scorebar{width:48px;height:6px;border-radius:3px;background:var(--muted-bg);overflow:hidden}
+.scorebar span{display:block;height:100%;background:var(--primary)}
+.rank{display:inline-flex;width:22px;height:22px;border-radius:50%;align-items:center;justify-content:center;font-weight:700;font-size:12px;background:var(--muted-bg)}
+.rank.r1{background:var(--ok-soft);color:var(--ok)}
+.review-item{padding:8px 0;border-bottom:1px dashed var(--border);font-size:13px}
+.review-item:last-child{border:0}
+.g2-1{grid-template-columns:3fr 2fr}

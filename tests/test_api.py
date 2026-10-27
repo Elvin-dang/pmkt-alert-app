@@ -263,3 +263,29 @@ def test_evidence_endpoint(tmp_path, synthetic_paths):
     assert "error" in api.evidence("pl:Nope", run["run_id"])
     import json
     json.dumps(ev, allow_nan=False)
+
+
+def test_dashboard_and_team_review(tmp_path, synthetic_paths):
+    review = {"summary": "PIC A dẫn đầu", "highlights": [{"pic": "PIC A", "metric": "gmv_pace", "text": "PIC A tốt"}],
+              "improve": [{"pic": "PIC B", "metric": "tacos_ratio", "text": "TACoS cao", "suggestion": "Giảm bid"}]}
+    def ask_fn(p, s):
+        if "highlights" in s["properties"]:
+            return review
+        return empty_for(s)
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=ask_fn)
+    run = api.run(paths(synthetic_paths))
+    d = api.dashboard(run["run_id"])
+    assert {p["pic"] for p in d["scorecard"]["pics"]} >= {"PIC A", "PIC B"} and d["weekly"] and d["runs"]
+    assert d["team_review"] is None
+    out = api.team_review(run["run_id"])
+    assert out["summary"] == "PIC A dẫn đầu" and api.dashboard(run["run_id"])["team_review"]["summary"] == "PIC A dẫn đầu"
+    api.save_score_weights({"gmv_pace": 2})
+    assert api.dashboard(run["run_id"])["scorecard"]["weights"]["gmv_pace"] == 2
+
+
+def test_team_review_drops_made_up_numbers(tmp_path, synthetic_paths):
+    bad = {"summary": "Tổng GMV $123,456,789", "highlights": [], "improve": []}
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=lambda p, s: bad if "highlights" in s["properties"] else empty_for(s))
+    run = api.run(paths(synthetic_paths))
+    out = api.team_review(run["run_id"])
+    assert out["summary"] == "" and out["dropped"] == 1

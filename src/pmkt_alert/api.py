@@ -18,7 +18,8 @@ from .export import export_pic
 from .loaders import ROLES, InputError, detect_inputs, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
 from .pipeline import result_to_json, run_rules
-from .prompts import STYLE_SCHEMA, style_prompt
+from .prompts import STYLE_SCHEMA, TEAM_SCHEMA, style_prompt, team_prompt
+from .scorecard import METRICS, scorecard, weekly
 from .rules.actions import suggest_email_map
 from .store import Store
 from .updater import DEFAULT_REPO, apply_update, download_verified, is_newer, latest_release, recent_releases
@@ -186,6 +187,57 @@ class Api:
         ev = evidence(self._ensure_inputs(), load_logic(logic_path), rj, unit_id)
         return {**ev, "files": rj.get("inputs", {}).get("files", {}), "logic_file": Path(logic_path).name,
                 "as_of": rj["as_of"]}
+
+    def _run_or_latest(self, run_id: str | None) -> dict:
+        run = self._store.load_run(run_id) if run_id else self._latest()
+        if not run:
+            raise ValueError("Không tìm thấy lần chạy")
+        return run
+
+    def _runs_history(self) -> list[dict]:
+        out = []
+        for r in reversed(self._store.list_runs()[:30]):
+            res = (self._store.load_run(r["run_id"]).get("result") or {})
+            out.append({"run_id": r["run_id"], "as_of": res.get("as_of"),
+                        "by_pic": {d["pic"]: {"high": d["pl_high"] + d["camp_high"], "excess": round(d["excess_new"], 2)}
+                                   for d in res.get("digest", [])}})
+        return out
+
+    @safe
+    def dashboard(self, run_id: str | None = None) -> dict:
+        run = self._run_or_latest(run_id)
+        weights = self._store.get_settings().get("score_weights") or {}
+        return {"run_id": run["run_id"], "scorecard": scorecard(run["result"], weights),
+                "weekly": weekly(self._ensure_inputs(), date.fromisoformat(run["result"]["as_of"])),
+                "runs": self._runs_history(), "team_review": run.get("team_review")}
+
+    @safe
+    def save_score_weights(self, weights: dict) -> dict:
+        keys = {m["key"] for m in METRICS}
+        clean = {k: max(0.0, float(v)) for k, v in weights.items() if k in keys}
+        self._store.save_settings({"score_weights": clean})
+        return {"weights": clean}
+
+    @safe
+    def team_review(self, run_id: str | None = None) -> dict:
+        run = self._run_or_latest(run_id)
+        sc = scorecard(run["result"], self._store.get_settings().get("score_weights") or {})
+        wk = weekly(self._ensure_inputs(), date.fromisoformat(run["result"]["as_of"]))
+        hist = self._runs_history()
+        out = self._ask(team_prompt(sc, wk, hist), TEAM_SCHEMA)
+        facts = [{**p["values"], **{f"score_{k}": v for k, v in p["scores"].items()}, "total": p["total"],
+                  "rank": p["rank"]} for p in sc["pics"]] + wk + [{"time_gone": sc["time_gone"]}]
+        facts += [v for h in hist for v in h["by_pic"].values()]
+        dropped = 0
+        if not grounded(out["summary"], facts):
+            out["summary"], dropped = "", dropped + 1
+        for key, fields in (("highlights", ("text",)), ("improve", ("text", "suggestion"))):
+            kept = [x for x in out[key] if all(grounded(x.get(f, ""), facts) for f in fields)]
+            dropped += len(out[key]) - len(kept)
+            out[key] = kept
+        review = {**out, "dropped": dropped, "created": datetime.now().isoformat(timespec="seconds")}
+        self._store.save_run_field(run["run_id"], "team_review", review)
+        return review
 
     @safe
     def results(self, run_id: str | None = None) -> dict:

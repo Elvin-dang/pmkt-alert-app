@@ -21,7 +21,7 @@ version = {attr = "pmkt_alert._version.VERSION"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-pmkt_alert = ["ui/*", "ui/fonts/*"]
+pmkt_alert = ["ui/*", "ui/fonts/*", "ui/vendor/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]

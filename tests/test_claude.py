@@ -182,3 +182,11 @@ def test_grounded_accepts_numeric_string_fields():
     rows = [{"campaign_id": "212121537347072", "excess": 38.43}]
     assert grounded("camp 212121537347072 dư chi $38.43", rows)
     assert not grounded("camp 999999999999999", rows)
+
+
+def test_vietnamese_number_formats_and_dash_dates():
+    rows = [{"gmv_mtd": 187268.4, "target": 233601.2, "tacos": 0.107, "excess": 527.64, "high": 19}]
+    assert grounded("GMV MTD 187.268 / target 233.601, TACoS 10,7%, excess 527,64 (tuần 2026-10-19, 10-05)", rows)
+    assert grounded("excess 527.64 và GMV 187,268", rows)
+    assert not grounded("GMV MTD 999.999", rows)
+    assert not grounded("TACoS 12,5%", rows)

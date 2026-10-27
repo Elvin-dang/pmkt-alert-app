@@ -62,6 +62,7 @@ function go(id) {
   $$("main section").forEach((s) => s.classList.toggle("on", s.id === id));
   $$("nav button").forEach((b) => (b.dataset.go === id ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current")));
   if (id === "review") loadReview();
+  if (id === "dashboard") loadDashboard();
   if (id === "lessons") loadLessons();
   if (id === "settings") loadSettings();
 }
@@ -164,7 +165,7 @@ async function doRun() {
 
 // ------------------------------------------------------------------ results
 function setRun(r) {
-  S.run = r.result; S.ai = r.ai; S.runId = r.run_id; S.open.clear();
+  S.run = r.result; S.ai = r.ai; S.runId = r.run_id; S.open.clear(); S.db = null;
   const digest = [...S.run.digest].sort((a, b) => (b.pl_high + b.camp_high) - (a.pl_high + a.camp_high));
   if (!digest.some((d) => d.pic === S.pic)) S.pic = digest.length ? digest[0].pic : null;
   $("#pic").innerHTML = digest.map((d) => `<option ${d.pic === S.pic ? "selected" : ""}>${esc(d.pic)}</option>`).join("");
@@ -500,8 +501,9 @@ async function install() {
 
 // ------------------------------------------------------------------ wiring
 function wire() {
+  wireDashboard();
   $$("nav button").forEach((b) => (b.onclick = () => go(b.dataset.go)));
-  $("#theme").onclick = () => { const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; applyTheme(t); store("theme", t); };
+  $("#theme").onclick = () => { const t = isDark() ? "light" : "dark"; applyTheme(t); store("theme", t); if (S.db && $("#dashboard").classList.contains("on")) renderDashboard(); };
   $("#cc-recheck").onclick = $("#cc-recheck2").onclick = checkClaude;
   $("#cc-install").onclick = installClaude;
   $("#cc-login").onclick = loginClaude;
@@ -615,3 +617,136 @@ async function init() {
 
 if (window.pywebview && window.pywebview.api) init();
 else window.addEventListener("pywebviewready", init);
+
+// ------------------------------------------------------------------ dashboard
+// Categorical palette (dataviz reference, validated for this app's light #fff and dark #111A2C cards).
+const SERIES = {
+  light: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"],
+  dark: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300", "#9085e9", "#e66767"],
+};
+const NO_PIC = "Chưa có PIC";
+const charts = {};
+function isDark() {
+  const t = document.documentElement.dataset.theme;
+  return t ? t === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+}
+function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function picColor(pic, pics) {
+  if (pic === NO_PIC) return cssVar("--muted");
+  const named = pics.filter((p) => p !== NO_PIC).sort();
+  return SERIES[isDark() ? "dark" : "light"][named.indexOf(pic) % 8];  // colour follows the PIC, never its rank
+}
+function drawChart(id, config) {
+  if (charts[id]) charts[id].destroy();
+  const el = document.getElementById(id);
+  if (!el || !window.Chart) return;
+  const ink = cssVar("--muted"), grid = cssVar("--border");
+  Chart.defaults.font.family = '"Fira Sans", system-ui, sans-serif';
+  Chart.defaults.color = ink;
+  config.options = {
+    responsive: true, maintainAspectRatio: false, animation: false,
+    interaction: { mode: config.type === "line" ? "index" : "nearest", intersect: false },
+    plugins: { legend: { position: "bottom", labels: { boxWidth: 10, boxHeight: 10, usePointStyle: true } }, ...(config.options?.plugins || {}) },
+    scales: Object.fromEntries(Object.entries(config.options?.scales || {}).map(([k, v]) => [k, { grid: { color: grid }, border: { display: false }, ...v }])),
+    ...Object.fromEntries(Object.entries(config.options || {}).filter(([k]) => !["plugins", "scales"].includes(k))),
+  };
+  charts[id] = new Chart(el, config);
+}
+const FMT = { x: (v) => (num(v) ? Number(v).toFixed(2) + "×" : "—"), "%": (v) => pct(v, 1) };
+async function loadDashboard() {
+  if (!S.runId) return;
+  $("#db-body").innerHTML = '<div class="muted"><span class="spin"></span> Đang tính…</div>';
+  const d = await api.dashboard(S.runId);
+  if (d.error) { $("#db-body").innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+  S.db = d;
+  renderDashboard();
+}
+function renderDashboard() {
+  const d = S.db, sc = d.scorecard, pics = sc.pics.map((p) => p.pic);
+  $("#db-sub").textContent = `Data đến ${ddmm(sc.as_of)} · time gone ${pct(sc.time_gone)} · mỗi PIC đo so với target của chính họ; điểm 0–100 là xếp hạng tương đối (100 = tốt nhất).`;
+  const ranked = sc.pics.filter((p) => p.rank);
+  const metricOpts = sc.metrics.map((m) => `<option value="${m.key}" ${m.key === (S.dbMetric || "gmv_pace") ? "selected" : ""}>${esc(m.label)}</option>`).join("");
+  const tr = d.team_review;
+  const review = tr ? `${tr.summary ? `<p style="margin-top:0">${esc(tr.summary)}</p>` : ""}
+      ${tr.highlights.length ? "<h3 style='font-size:13px;margin:8px 0 4px'>Điểm mạnh</h3>" + tr.highlights.map((h) => `<div class="review-item"><span class="sev OK">${esc(h.pic)}</span> <b>${esc(metricLabel(h.metric))}</b><div>${esc(h.text)}</div></div>`).join("") : ""}
+      ${tr.improve.length ? "<h3 style='font-size:13px;margin:12px 0 4px'>Cần cải thiện</h3>" + tr.improve.map((h) => `<div class="review-item"><span class="sev MED">${esc(h.pic)}</span> <b>${esc(metricLabel(h.metric))}</b><div>${esc(h.text)}</div><div class="muted">→ ${esc(h.suggestion)}</div></div>`).join("") : ""}
+      <p class="muted" style="font-size:12px">${esc((tr.created || "").replace("T", " "))}${tr.dropped ? ` · đã bỏ ${tr.dropped} câu vì số liệu không khớp` : ""}</p>`
+    : '<div class="empty">Bấm “Nhận xét bởi Claude” để Claude so sánh các PIC dựa trên scorecard, xu hướng theo tuần và lịch sử các lần chạy.</div>';
+  $("#db-body").innerHTML = `
+    <div class="grid g2-1">
+      <div class="card"><h2>Xếp hạng tổng (điểm 0–100)</h2><div class="chartbox"><canvas id="ch-rank" role="img" aria-label="Điểm tổng theo PIC"></canvas></div></div>
+      <div class="card"><h2>Nhận xét của Claude</h2><div id="db-review">${review}</div></div>
+    </div>
+    <div class="card" style="margin-top:12px"><h2>Scorecard</h2><div class="tbl"><table>
+      <thead><tr><th>#</th><th>PIC</th><th class="n">Điểm</th>${sc.metrics.map((m) => `<th class="n" title="${esc(m.label)}">${esc(m.short)}</th>`).join("")}<th class="n">HIGH</th><th class="n">Excess $</th></tr></thead>
+      <tbody>${sc.pics.map((p) => `<tr><td>${p.rank ? `<span class="rank ${p.rank === 1 ? "r1" : ""}">${p.rank}</span>` : "—"}</td>
+        <td style="white-space:nowrap"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:${picColor(p.pic, pics)};margin-right:6px"></span>${esc(p.pic)}</td>
+        <td class="n"><b>${p.total ?? "—"}</b></td>
+        ${sc.metrics.map((m) => { const s = p.scores[m.key]; return `<td class="n"><div class="scorecell"><span class="num">${FMT[m.fmt](p.values[m.key])}</span>${s == null ? "" : `<span class="scorebar" title="điểm ${s}"><span style="width:${s}%"></span></span>`}</div></td>`; }).join("")}
+        <td class="n">${p.values.high_alerts}</td><td class="n">${money(p.values.excess_new)}</td></tr>`).join("")}</tbody></table></div>
+      <p class="muted" style="font-size:12px">${sc.metrics.map((m) => `<b>${esc(m.short)}</b>: ${esc(m.label)} (${m.higher_better ? "cao tốt" : "thấp tốt"})`).join(" · ")}<br>Thanh nhỏ = điểm của chỉ số (dài = tốt hơn so với các PIC khác). “${NO_PIC}” không được xếp hạng.</p></div>
+    <div class="grid g2" style="margin-top:12px">
+      <div class="card"><div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0">So sánh theo chỉ số</h2><span style="flex:1"></span><select id="db-metric" style="width:auto">${metricOpts}</select></div>
+        <div class="chartbox" style="margin-top:8px"><canvas id="ch-metric" role="img" aria-label="So sánh chỉ số giữa các PIC"></canvas></div></div>
+      <div class="card"><div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0">Xu hướng theo tuần</h2><span style="flex:1"></span>
+        <select id="db-week" style="width:auto">${[["gmv", "GMV"], ["spend", "Ads spend"], ["tacos", "TACoS"], ["acos", "ACoS"]].map(([v, l]) => `<option value="${v}" ${v === (S.dbWeek || "gmv") ? "selected" : ""}>${l}</option>`).join("")}</select></div>
+        <div class="chartbox" style="margin-top:8px"><canvas id="ch-week" role="img" aria-label="Xu hướng theo tuần"></canvas></div>
+        <p class="muted" style="font-size:12px;margin:4px 0 0">Tuần tính từ thứ Hai; tuần cuối có thể chưa đủ 7 ngày.</p></div>
+    </div>
+    <div class="card" style="margin-top:12px"><h2>Số alert HIGH qua các lần chạy</h2>${d.runs.length >= 2 ? '<div class="chartbox"><canvas id="ch-runs" role="img" aria-label="Alert HIGH qua các lần chạy"></canvas></div>' : '<div class="empty">Cần ít nhất 2 lần chạy để xem xu hướng.</div>'}</div>`;
+  drawCharts();
+}
+function metricLabel(key) { return ((S.db?.scorecard.metrics || []).find((m) => m.key === key) || { label: key }).label; }
+function drawCharts() {
+  const d = S.db, sc = d.scorecard, pics = sc.pics.map((p) => p.pic);
+  const ranked = sc.pics.filter((p) => p.rank);
+  const blue = SERIES[isDark() ? "dark" : "light"][0];
+  drawChart("ch-rank", { type: "bar", data: { labels: ranked.map((p) => p.pic), datasets: [{ data: ranked.map((p) => p.total), backgroundColor: blue, borderRadius: 4, barThickness: 18 }] },
+    options: { indexAxis: "y", plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `Điểm ${c.raw}` } } }, scales: { x: { min: 0, max: 100 }, y: { grid: { display: false } } } } });
+  const m = sc.metrics.find((x) => x.key === (S.dbMetric || "gmv_pace"));
+  const rows = sc.pics.filter((p) => p.values[m.key] != null);
+  drawChart("ch-metric", { type: "bar", data: { labels: rows.map((p) => p.pic), datasets: [{ data: rows.map((p) => p.values[m.key]), backgroundColor: rows.map((p) => picColor(p.pic, pics)), borderRadius: 4, barThickness: 18 }] },
+    options: { indexAxis: "y", plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${m.label}: ${FMT[m.fmt](c.raw)}` } } },
+      scales: { x: { ticks: { callback: (v) => FMT[m.fmt](v) } }, y: { grid: { display: false } } } } });
+  const key = S.dbWeek || "gmv";
+  const weeks = [...new Set(d.weekly.map((r) => r.week))].sort();
+  const isRatio = key === "tacos" || key === "acos";
+  drawChart("ch-week", { type: "line", data: { labels: weeks.map(ddmm), datasets: pics.map((pic) => ({ label: pic, borderColor: picColor(pic, pics), backgroundColor: picColor(pic, pics), borderWidth: 2, pointRadius: 4, tension: 0,
+      data: weeks.map((w) => { const r = d.weekly.find((x) => x.pic === pic && x.week === w); return r ? r[key] : null; }) })) },
+    options: { plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${isRatio ? pct(c.raw, 1) : money(c.raw)}` } } }, scales: { y: { ticks: { callback: (v) => (isRatio ? pct(v) : "$" + Number(v).toLocaleString("en-US")) } } } } });
+  if (d.runs.length >= 2) {
+    drawChart("ch-runs", { type: "line", data: { labels: d.runs.map((r) => `${ddmm(r.as_of)} (${r.run_id.slice(9, 13)})`),
+      datasets: pics.map((pic) => ({ label: pic, borderColor: picColor(pic, pics), backgroundColor: picColor(pic, pics), borderWidth: 2, pointRadius: 4, data: d.runs.map((r) => r.by_pic[pic]?.high ?? null) })) },
+      options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  }
+}
+async function teamReview() {
+  const b = $("#db-review-btn");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span> Claude đang phân tích…';
+  const r = await api.team_review(S.runId);
+  b.disabled = false; b.innerHTML = '<svg class="i" aria-hidden="true"><use href="#spark"/></svg>Nhận xét bởi Claude';
+  if (bad(r)) return;
+  S.db.team_review = r;
+  renderDashboard();
+}
+function renderWeights() {
+  const sc = S.db.scorecard;
+  $("#db-weights").innerHTML = `<h2>Trọng số điểm</h2><p class="muted" style="font-size:12px;margin-top:0">0 = không tính chỉ số đó. Mặc định mọi chỉ số bằng nhau (1).</p>
+    <div class="grid g4">${sc.metrics.map((m) => `<div><label for="w-${m.key}">${esc(m.label)}</label><input type="text" inputmode="decimal" id="w-${m.key}" data-w="${m.key}" value="${sc.weights[m.key] ?? 1}"></div>`).join("")}</div>
+    <div style="margin-top:10px;display:flex;gap:8px"><button class="btn primary" id="w-save">Lưu & tính lại</button><button class="btn" id="w-reset">Về mặc định</button></div>`;
+}
+function wireDashboard() {
+  $("#db-review-btn").onclick = teamReview;
+  $("#db-weights-btn").onclick = () => { if (!S.db) return; renderWeights(); $("#db-weights").classList.toggle("hidden"); };
+  $("#db-weights").addEventListener("click", async (e) => {
+    if (e.target.id === "w-save" || e.target.id === "w-reset") {
+      const w = {};
+      $$("#db-weights [data-w]").forEach((i) => (w[i.dataset.w] = e.target.id === "w-reset" ? 1 : Number(i.value.replace(",", ".")) || 0));
+      if (!bad(await api.save_score_weights(w))) { $("#db-weights").classList.add("hidden"); loadDashboard(); }
+    }
+  });
+  $("#db-body").addEventListener("change", (e) => {
+    if (e.target.id === "db-metric") { S.dbMetric = e.target.value; drawCharts(); }
+    if (e.target.id === "db-week") { S.dbWeek = e.target.value; drawCharts(); }
+  });
+}

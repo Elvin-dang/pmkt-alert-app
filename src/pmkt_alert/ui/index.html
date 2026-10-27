@@ -22,7 +22,8 @@
  <symbol id="chev" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
  <symbol id="alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
  <symbol id="check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
-<symbol id="folder" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></symbol>
+<symbol id="chart" viewBox="0 0 24 24"><path d="M3 3v18h18"/><path d="M7 16v-5"/><path d="M12 16V7"/><path d="M17 16v-8"/></symbol>
+ <symbol id="folder" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/></symbol>
  <symbol id="download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></symbol>
 </svg>
 
@@ -38,6 +39,7 @@
 <nav aria-label="Điều hướng chính">
   <button data-go="run" aria-current="page"><svg class="i" aria-hidden="true"><use href="#play"/></svg>Chạy dữ liệu</button>
   <button data-go="results"><svg class="i" aria-hidden="true"><use href="#bell"/></svg>Kết quả<span class="count hidden" id="nav-results"></span></button>
+  <button data-go="dashboard"><svg class="i" aria-hidden="true"><use href="#chart"/></svg>Dashboard đội</button>
   <button data-go="review"><svg class="i" aria-hidden="true"><use href="#scale"/></svg>Rà soát logic<span class="count med hidden" id="nav-review"></span></button>
   <button data-go="lessons"><svg class="i" aria-hidden="true"><use href="#book"/></svg>Bài học & Lịch sử</button>
   <div class="sep"></div>
@@ -84,6 +86,17 @@
     <button class="btn" id="export"><svg class="i" aria-hidden="true"><use href="#download"/></svg>Xuất Excel</button>
   </div>
   <div id="results-body"><div class="empty" style="margin-top:12px">Chưa có kết quả – vào “Chạy dữ liệu”.</div></div>
+</section>
+
+<section id="dashboard">
+  <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+    <div><h1>Dashboard đội</h1><p class="sub" style="margin:0" id="db-sub">So sánh các PIC – mỗi người được đo so với target của chính họ.</p></div>
+    <span style="flex:1"></span>
+    <button class="btn" id="db-weights-btn">Trọng số điểm</button>
+    <button class="btn primary" id="db-review-btn"><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Nhận xét bởi Claude</button>
+  </div>
+  <div id="db-weights" class="card hidden" style="margin-top:12px"></div>
+  <div id="db-body" style="margin-top:12px"><div class="empty">Chưa có dữ liệu – chạy dữ liệu trước.</div></div>
 </section>
 
 <section id="review">
@@ -211,6 +224,7 @@
   </aside>
 </div>
 
+<script src="vendor/chart.umd.min.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

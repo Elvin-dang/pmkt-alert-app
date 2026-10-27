@@ -165,27 +165,53 @@ def ask(prompt: str, schema: dict, runner=subprocess.run, timeout: int = 240) ->
 
 
 # ----------------------------------------------------------------- grounding
-_DATES = re.compile(r"\b\d{1,2}/\d{1,2}(?:/\d{2,4})?\b|\b(?:ngày|T|tháng|tuần)\s?\d{1,2}\b", re.IGNORECASE)
-_TOKEN = re.compile(r"(\$)?\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d+))?\s?(k\b|%)?", re.IGNORECASE)
+_DATES = re.compile(r"\b\d{4}-\d{1,2}-\d{1,2}\b|\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b|\b(?:ngày|T|tháng|tuần)\s?\d{1,2}\b",
+                    re.IGNORECASE)
+_TOKEN = re.compile(r"(\$)?\s?(\d+(?:[.,]\d+)*)\s?(k\b|%)?", re.IGNORECASE)
+
+
+def _readings(raw: str) -> list[tuple[float, int]]:
+    """Possible (value, decimals) for a number written either way: 1,234.5 (EN) or 1.234,5 (VI).
+    "187.268" / "527,640" are ambiguous (thousands or decimals) – both readings are kept."""
+    if "." in raw and "," in raw:
+        dec = "." if raw.rfind(".") > raw.rfind(",") else ","
+        whole, frac = raw.rsplit(dec, 1)
+        return [(float(whole.replace(".", "").replace(",", "") + "." + frac), len(frac))]
+    sep = "." if "." in raw else "," if "," in raw else None
+    if sep is None:
+        return [(float(raw), 0)]
+    parts = raw.split(sep)
+    out = []
+    if all(len(p) == 3 for p in parts[1:]) and 1 <= len(parts[0]) <= 3:
+        out.append((float("".join(parts)), 0))  # thousands separators
+    if len(parts) == 2:
+        out.append((float(parts[0] + "." + parts[1]), len(parts[1])))  # decimal separator
+    return out
+
+
+def number_tokens(text: str) -> list[list[tuple[float, bool, int]]]:
+    """Each quoted number with its possible readings (value, is_percent, precision exponent).
+    Dates, month refs, words like x2/L7D and bare integers ≤ 10 are ignored."""
+    out, clean = [], _DATES.sub(" ", text)
+    for m in _TOKEN.finditer(clean):
+        dollar, raw, suffix = m.groups()
+        first = m.start(1) if dollar else m.start(2)  # the match may begin with a space
+        if first > 0 and clean[first - 1].isalpha():
+            continue
+        suffix = (suffix or "").lower()
+        readings = []
+        for value, decimals in _readings(raw):
+            if suffix == "k":
+                value, decimals = value * 1000, decimals - 3
+            readings.append((value, suffix == "%", decimals))
+        if not dollar and not suffix and len(readings) == 1 and readings[0][2] == 0 and readings[0][0] <= 10:
+            continue
+        out.append(readings)
+    return out
 
 
 def numbers_in(text: str) -> list[tuple[float, bool, int]]:
-    """(value, is_percent, precision exponent). Dates, month refs and bare integers ≤ 10 are ignored."""
-    out, clean = [], _DATES.sub(" ", text)
-    for m in _TOKEN.finditer(clean):
-        dollar, whole, frac, suffix = m.groups()
-        first = m.start(1) if dollar else m.start(2)  # the match may begin with a space
-        if first > 0 and clean[first - 1].isalpha():
-            continue  # part of a word like "x2", "T10", "L7D"
-        value = float(whole.replace(",", "") + ("." + frac if frac else ""))
-        decimals = len(frac) if frac else 0
-        suffix = (suffix or "").lower()
-        if suffix == "k":
-            value, decimals = value * 1000, decimals - 3
-        if not dollar and not suffix and not frac and value <= 10:
-            continue
-        out.append((value, suffix == "%", decimals))
-    return out
+    return [r[0] for r in number_tokens(text)]
 
 
 def _values(rows: list[dict]) -> list[float]:
@@ -201,12 +227,11 @@ def _values(rows: list[dict]) -> list[float]:
 
 def grounded(text: str, rows: list[dict]) -> bool:
     vals = _values(rows)
-    for value, is_pct, dec in numbers_in(text):
+
+    def matches(value, is_pct, dec):
         tol = 0.5 * 10 ** (-dec) + 1e-9
-        cands = [v * 100 for v in vals] if is_pct else vals
-        if not any(abs(value - c) <= tol for c in cands):
-            return False
-    return True
+        return any(abs(value - (c * 100 if is_pct else c)) <= tol for c in vals)
+    return all(any(matches(*r) for r in readings) for readings in number_tokens(text))
 
 
 def filter_grounded(items: list[dict], rows_by_id: dict[str, dict], text_keys: tuple[str, ...],

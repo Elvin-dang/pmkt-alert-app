@@ -83,6 +83,12 @@ class Store:
         run["ai"] = ai_json
         self._write(f"runs/{run_id}.json", run)
 
+    @_locked
+    def save_run_field(self, run_id: str, key: str, value) -> None:
+        run = self.load_run(run_id)
+        run[key] = value
+        self._write(f"runs/{run_id}.json", run)
+
     def list_runs(self) -> list[dict]:
         fb = self.list_feedback()
         out = []
