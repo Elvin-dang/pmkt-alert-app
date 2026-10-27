@@ -13,7 +13,7 @@ const SEV = { HIGH: 0, MED: 1, LOW: 2, "": 3 };
 const ROLE_NAME = { tracker: "Tracking (raw_sso_us, Product Info, KPI)", ads: "Ads by Campaign (ads_camp)", activity: "Activity Log", logic: "Alert_Logic", defind: "Defind" };
 
 let api = null;
-const S = { paths: [], roles: null, run: null, ai: null, runId: null, pic: null, showLow: false, open: new Set(), update: null, fb: null, origSlack: "" };
+const S = { paths: [], roles: null, run: null, ai: null, runId: null, pic: null, open: new Set(), update: null, fb: null, origSlack: "" };
 
 // ------------------------------------------------------------------ helpers
 function bad(r) {
@@ -179,6 +179,8 @@ function setRun(r) {
   renderResults();
 }
 function aiFor(pic) { return ((S.ai || {}).per_pic || {})[pic] || null; }
+const F_DEFAULT = { sev: "HM", action: "", trend: "", status: "", q: "", sort: "sev", dir: 1, todoSev: "", todoDue: "" };
+S.f = { ...F_DEFAULT };
 function renderResults() {
   const body = $("#results-body");
   if (!S.run || !S.pic) { body.innerHTML = '<div class="empty" style="margin-top:12px">Chưa có kết quả – vào “Chạy dữ liệu”.</div>'; return; }
@@ -199,10 +201,8 @@ function renderResults() {
     <div class="tabs" role="tablist">
       ${[["t-alerts", "Cảnh báo"], ["t-todos", `To-do (${todos.length})`], ["t-insights", "Insight"], ["t-data", `Data ⚠ (${issues.length})`]]
         .map(([id, label]) => `<button role="tab" aria-selected="${id === tab}" data-tab="${id}">${label}</button>`).join("")}
-      <span style="flex:1"></span>
-      <label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:500;color:var(--fg)"><input type="checkbox" id="show-low" ${S.showLow ? "checked" : ""}> Hiện LOW</label>
     </div>
-    <div class="tabpanel ${tab === "t-alerts" ? "on" : ""}" id="t-alerts">${alertsTable()}</div>
+    <div class="tabpanel ${tab === "t-alerts" ? "on" : ""}" id="t-alerts">${filterBar()}${alertsTable()}</div>
     <div class="tabpanel ${tab === "t-todos" ? "on" : ""}" id="t-todos">${todosHtml(mine)}</div>
     <div class="tabpanel ${tab === "t-insights" ? "on" : ""}" id="t-insights">${insightsHtml(mine)}</div>
     <div class="tabpanel ${tab === "t-data" ? "on" : ""}" id="t-data">${issues.length ? issues.map((i) => `<div class="todo"><span class="sev ${i.severity === "WARN" ? "MED" : "INFO"}">${i.severity === "WARN" ? "DATA" : "INFO"}</span><div><div class="t">${esc(i.title)}</div><div class="d">${esc(i.detail)}</div></div></div>`).join("") : '<div class="empty">Data ổn.</div>'}</div>`;
@@ -212,46 +212,124 @@ function claudeMissing(mine) {
   const err = !S.ai ? "Lần chạy này không dùng Claude" : (mine && mine.error) || S.ai.error;
   return `<div class="empty"><b>Claude không sẵn sàng</b><br>${esc(err || "")}<br>Kết quả rule vẫn đầy đủ ở tab Cảnh báo.</div>`;
 }
+function evBtn(units, label = "Bằng chứng") {
+  const list = (Array.isArray(units) ? units : [units]).filter((u) => /^(pl|camp):/.test(u || ""));
+  if (!list.length) return "";
+  return `<button class="fb evb" data-ev="${esc(list.join("|"))}" title="Xem dữ liệu gốc: file, sheet, cột, dòng"><svg class="i" aria-hidden="true"><use href="#file"/></svg>${label}</button>`;
+}
+function opts(list, cur, all) {
+  return [`<option value="">${esc(all)}</option>`, ...list.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`)].join("");
+}
+function filterBar() {
+  const mineCamps = S.run.camp.filter((r) => r.pic === S.pic);
+  const minePls = S.run.pl.filter((r) => r.pic === S.pic);
+  const actions = [...new Set([...minePls.map((p) => short(p.pacing_action)), ...mineCamps.map((c) => short(c.base_action))])].sort();
+  const trends = [...new Set(minePls.map((p) => p.trend_label).filter(Boolean))].sort();
+  return `<div class="filters">
+    <input type="search" id="f-q" placeholder="Tìm PL / campaign…" value="${esc(S.f.q)}" aria-label="Tìm">
+    <select id="f-sev" aria-label="Mức">${opts([["HM", "HIGH + MED"], ["HIGH", "Chỉ HIGH"], ["MED", "Chỉ MED"], ["LOW", "Chỉ LOW"]], S.f.sev, "Mọi mức")}</select>
+    <select id="f-action" aria-label="Action">${opts(actions.map((a) => [a, a]), S.f.action, "Mọi action")}</select>
+    <select id="f-trend" aria-label="Trend">${opts(trends.map((t) => [t, t]), S.f.trend, "Mọi trend")}</select>
+    <select id="f-status" aria-label="Trạng thái">${opts([["CHƯA ACTION", "Chưa action"], ["ĐÃ ACTION", "Đã action (follow-up)"], ["ACTION CŨ", "Action cũ"]], S.f.status, "Mọi trạng thái")}</select>
+    <button class="btn sm ghost" id="f-reset">Xoá lọc</button>
+  </div>`;
+}
+const SEV_OK = (s, f) => !f || (f === "HM" ? s === "HIGH" || s === "MED" : s === f);
+const SORTS = {
+  sev: [(r) => SEV[r.pacing_sev ?? r.sev] ?? 3, 1], name: [(r) => (r.pl || r.campaign || "").toLowerCase(), 1],
+  gmv: [(r) => r.pct_gmv ?? -1, -1], spend: [(r) => r.pct_spend ?? -1, -1], tacos: [(r) => r.actual_tacos ?? -1, -1],
+  dspend: [(r) => r.d_spend ?? -9, -1], excess: [(r) => r._excess ?? r.excess ?? 0, -1],
+};
+function sortRows(rows) {
+  const [key, natural] = SORTS[S.f.sort] || SORTS.sev;
+  const dir = natural * S.f.dir;
+  return rows.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * dir || (SEV[a.pacing_sev ?? a.sev] ?? 3) - (SEV[b.pacing_sev ?? b.sev] ?? 3); });
+}
+function th(label, key, cls = "") {
+  const on = S.f.sort === key;
+  return `<th class="${cls} sortable" data-sort="${key}" aria-sort="${on ? (S.f.dir === 1 ? "ascending" : "descending") : "none"}">${label}${on ? (S.f.dir === 1 ? " ▾" : " ▴") : ""}</th>`;
+}
 function alertsTable() {
-  const pls = S.run.pl.filter((r) => r.pic === S.pic);
-  const camps = S.run.camp.filter((r) => r.pic === S.pic && (S.showLow || r.sev === "HIGH" || r.sev === "MED"));
+  const f = S.f, q = f.q.trim().toLowerCase();
+  const campOk = (c) => SEV_OK(c.sev, f.sev) && (!f.action || short(c.base_action) === f.action) && (!f.status || c.status === f.status)
+    && (!q || c.campaign.toLowerCase().includes(q) || c.pl.toLowerCase().includes(q));
   const byPl = {};
-  camps.forEach((c) => (byPl[c.pl] = byPl[c.pl] || []).push(c));
-  const visible = pls.filter((p) => S.showLow || p.pacing_sev !== "LOW" || p.trend_label || byPl[p.pl])
-    .sort((a, b) => SEV[a.pacing_sev] - SEV[b.pacing_sev] || (b.spend_mtd || 0) - (a.spend_mtd || 0));
-  if (!visible.length) return '<div class="empty">Không có cảnh báo cho PIC này.</div>';
-  const sent = new Set((S.feedbackUnits || []));
+  S.run.camp.filter((c) => c.pic === S.pic && campOk(c)).forEach((c) => (byPl[c.pl] = byPl[c.pl] || []).push(c));
+  const plOk = (p) => !f.status && SEV_OK(p.pacing_sev, f.sev) && (!f.action || short(p.pacing_action) === f.action)
+    && (!f.trend || p.trend_label === f.trend) && (!q || p.pl.toLowerCase().includes(q));
+  const pls = S.run.pl.filter((p) => p.pic === S.pic && (plOk(p) || (byPl[p.pl] && (!f.trend || p.trend_label === f.trend))))
+    .map((p) => ({ ...p, _excess: (byPl[p.pl] || []).reduce((a, c) => a + (c.excess || 0), 0) }));
+  const visible = sortRows(pls);
+  if (!visible.length) return '<div class="empty">Không có dòng nào khớp bộ lọc.</div>';
+  const sent = new Set(S.feedbackUnits || []);
   const rows = visible.map((p) => {
-    const kids = (byPl[p.pl] || []).sort((a, b) => SEV[a.sev] - SEV[b.sev] || b.excess - a.excess);
-    const open = S.open.has(p.pl);
+    const kids = sortRows(byPl[p.pl] || []);
+    const open = S.open.has(p.pl) || (q && kids.length);
     const color = p.pacing_sev === "HIGH" ? "var(--high)" : p.pacing_sev === "MED" ? "var(--med)" : "var(--fg)";
-    const head = `<tr class="expandable" data-pl="${esc(p.pl)}" aria-expanded="${open}"><td>${kids.length ? `<svg class="i" aria-hidden="true" style="transform:rotate(${open ? 90 : 0}deg)"><use href="#chev"/></svg>` : ""}</td>
+    const head = `<tr class="expandable" data-pl="${esc(p.pl)}" aria-expanded="${!!open}"><td>${kids.length ? `<svg class="i" aria-hidden="true" style="transform:rotate(${open ? 90 : 0}deg)"><use href="#chev"/></svg>` : ""}</td>
       <td><b>${esc(p.pl)}</b>${kids.length ? ` <span class="muted">(${kids.length})</span>` : ""}</td><td>${sev(p.pacing_sev)}</td>
       <td class="lab" style="color:${color}">${esc(short(p.pacing_action))}</td><td class="lab">${esc(p.trend_label || "—")}</td>
       <td class="n">${pct(p.pct_gmv)}</td><td class="n">${pct(p.pct_spend)}</td><td class="n">${pct(p.actual_tacos, 1)} <span class="muted">/${pct(p.target_tacos, 1)}</span></td>
-      <td class="n">${signed(p.d_spend)}</td><td class="n">—</td><td class="muted">${esc(p.pacing_reason)}${p.trend_action ? "<br>" + esc(p.trend_action) : ""}</td>
-      <td>${fbBtn(p.unit_id, `${p.pl} · ${short(p.pacing_action)}`, sent.has(p.unit_id))}</td></tr>`;
+      <td class="n">${signed(p.d_spend)}</td><td class="n">${p._excess ? money(p._excess) : "—"}</td>
+      <td class="acts">${evBtn(p.unit_id)}${fbBtn(p.unit_id, `${p.pl} · ${short(p.pacing_action)}`, sent.has(p.unit_id))}</td></tr>`;
     const children = open ? kids.map((c) => `<tr class="child"><td></td><td class="muted" title="${esc(c.campaign)}">${esc(c.campaign)}</td><td>${sev(c.sev)}</td>
-      <td class="lab">${esc(c.final_label || short(c.base_action))}</td><td></td><td></td><td></td>
+      <td class="lab">${esc(c.final_label || short(c.base_action))}</td><td class="muted">${esc(c.camp_trend ? c.camp_trend.replace("7D: ", "") : "")}</td><td></td><td></td>
       <td class="n">ACoS ${num(c.acos_ratio) ? Number(c.acos_ratio).toFixed(2) + "×" : "—"}</td><td class="n">${signed(c.d_spend)}</td>
-      <td class="n">${money(c.excess)}</td><td class="muted">${esc([c.camp_trend, c.followup_check].filter(Boolean).join(" · "))}</td>
-      <td>${fbBtn(c.unit_id, `${c.campaign} · ${short(c.final_label || c.base_action)}`, sent.has(c.unit_id))}</td></tr>`).join("") : "";
+      <td class="n">${money(c.excess)}</td>
+      <td class="acts">${evBtn(c.unit_id)}${fbBtn(c.unit_id, `${c.campaign} · ${short(c.final_label || c.base_action)}`, sent.has(c.unit_id))}</td></tr>`).join("") : "";
     return head + children;
   }).join("");
-  return `<div class="tbl"><table><thead><tr><th></th><th>Product Line / Campaign</th><th>Mức</th><th>Pacing / Action</th><th>Trend L7D</th>
-    <th class="n">GMV %</th><th class="n">Spend %</th><th class="n">TACoS</th><th class="n">Δ Spend</th><th class="n">Excess $</th><th>Lý do</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  return `<div class="tbl"><table><thead><tr><th></th>${th("Product Line / Campaign", "name")}${th("Mức", "sev")}<th>Pacing / Action</th><th>Trend L7D</th>
+    ${th("GMV %", "gmv", "n")}${th("Spend %", "spend", "n")}${th("TACoS", "tacos", "n")}${th("Δ Spend", "dspend", "n")}${th("Excess $", "excess", "n")}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="muted" style="font-size:12px">${visible.length} PL · bấm tiêu đề cột để sắp xếp · “Bằng chứng” mở dữ liệu gốc.</p>`;
 }
 function todosHtml(mine) {
   if (!mine || (mine.error && !mine.todos.length)) return claudeMissing(mine);
   if (!mine.todos.length) return '<div class="empty">Không có to-do.</div>';
-  return mine.todos.map((t) => `<div class="todo">${sev(t.severity)}<div><div class="t">${esc(t.title)}</div><div class="d">${esc(t.detail)}</div></div>
-    <div class="r"><span class="muted">${t.due === "today" ? "Hôm nay" : "Trong tuần"}</span>${fbBtn((t.refs || [])[0] || "todo:" + t.title, "To-do: " + t.title)}</div></div>`).join("")
+  const list = mine.todos.filter((t) => (!S.f.todoSev || t.severity === S.f.todoSev) && (!S.f.todoDue || t.due === S.f.todoDue));
+  return `<div class="filters"><select id="f-todo-sev" aria-label="Mức">${opts([["HIGH", "HIGH"], ["MED", "MED"]], S.f.todoSev, "Mọi mức")}</select>
+    <select id="f-todo-due" aria-label="Hạn">${opts([["today", "Hôm nay"], ["week", "Trong tuần"]], S.f.todoDue, "Mọi hạn")}</select></div>`
+    + (list.length ? list.map((t) => `<div class="todo">${sev(t.severity)}<div><div class="t">${esc(t.title)}</div><div class="d">${esc(t.detail)}</div></div>
+    <div class="r"><span class="muted">${t.due === "today" ? "Hôm nay" : "Trong tuần"}</span><span class="acts">${evBtn(t.refs || [])}${fbBtn((t.refs || [])[0] || "todo:" + t.title, "To-do: " + t.title)}</span></div></div>`).join("") : '<div class="empty">Không có to-do khớp bộ lọc.</div>')
     + (mine.dropped ? `<p class="muted" style="font-size:12px">Đã bỏ ${mine.dropped} câu của Claude vì số liệu không khớp dữ liệu.</p>` : "");
+}
+
+// ------------------------------------------------------------------ evidence popup
+async function openEvidence(units) {
+  S.ev = { units, i: 0 };
+  $("#ev").classList.add("on");
+  await showEvidence();
+}
+async function showEvidence() {
+  const { units, i } = S.ev;
+  $("#ev-tabs").innerHTML = units.length > 1 ? units.map((u, k) => `<button class="btn sm ${k === i ? "primary" : ""}" data-evi="${k}">${esc(u.replace(/^camp:\d+:/, "camp: ").replace(/^pl:/, "PL: "))}</button>`).join("") : "";
+  $("#ev-title").textContent = "Bằng chứng";
+  $("#ev-body").innerHTML = '<div class="muted"><span class="spin"></span> Đang đọc dữ liệu gốc…</div>';
+  const ev = await api.evidence(units[i], S.runId);
+  if (ev.error) { $("#ev-body").innerHTML = `<div class="empty">${esc(ev.error)}</div>`; return; }
+  $("#ev-title").textContent = ev.title;
+  const table = (rows) => {
+    if (!rows.length) return '<p class="muted">Không có dòng.</p>';
+    const cols = Object.keys(rows[0]);
+    return `<div class="tbl" style="max-height:240px"><table><thead><tr>${cols.map((c) => `<th>${c === "_row" ? "Dòng Excel" : esc(c)}</th>`).join("")}</tr></thead>
+      <tbody>${rows.map((r) => `<tr>${cols.map((c) => `<td class="${typeof r[c] === "number" ? "n" : ""}">${esc(typeof r[c] === "number" && c !== "_row" ? Number(r[c]).toLocaleString("en-US", { maximumFractionDigits: 2 }) : r[c])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+  };
+  $("#ev-body").innerHTML = `
+    <p class="muted" style="font-size:12px;margin-top:0">Data đến ${esc(ev.as_of)} · Logic: ${esc(ev.logic_file)} · File: ${esc(Object.values(ev.files || {}).join(", "))}</p>
+    <h3>Cách tính</h3>
+    <table><tbody>${ev.calc.map((c) => `<tr><td><b>${esc(c.label)}</b></td><td class="muted">${esc(c.formula)}</td><td class="n"><b>${esc(c.value)}</b></td></tr>`).join("")}</tbody></table>
+    <h3>Ngưỡng so sánh</h3>
+    <table><tbody>${ev.thresholds.map((t) => `<tr><td>${esc(t.label)}</td><td class="num muted">${esc(t.file)} › ${esc(t.cell)}</td><td class="n"><b>${esc(t.value)}</b></td></tr>`).join("")}</tbody></table>
+    <h3>Dữ liệu gốc</h3>
+    ${ev.sections.map((s) => `<details class="evsec" ${s.key === "raw_mtd" || s.key === "ads_l7d" ? "open" : ""}><summary><b>${esc(s.title)}</b> · <span class="num">${s.row_count}</span> dòng
+      ${Object.keys(s.totals).length ? " · " + Object.entries(s.totals).map(([k, v]) => `${esc(k)} = <span class="num">${Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 })}</span>`).join(" · ") : ""}</summary>
+      <div class="muted" style="font-size:12px;margin:6px 0">Nguồn: <b>${esc(s.source)}</b><br>Lọc: ${esc(s.filter)}${s.columns_text ? `<br>Cột: ${esc(s.columns_text)}` : ""}${s.row_ranges ? `<br>Dòng Excel: <span class="num">${esc(s.row_ranges.length > 260 ? s.row_ranges.slice(0, s.row_ranges.lastIndexOf(",", 260)) + " … (+" + (s.row_ranges.slice(s.row_ranges.lastIndexOf(",", 260)).split(",").length - 1) + " nhóm dòng)" : s.row_ranges)}</span>` : ""}${s.row_count > s.rows.length ? ` · hiển thị ${s.rows.length}/${s.row_count}` : ""}</div>
+      ${table(s.rows)}</details>`).join("")}`;
 }
 function insightsHtml(mine) {
   const list = !mine || (mine.error && !mine.insights.length) ? claudeMissing(mine)
     : mine.insights.length ? mine.insights.map((i) => `<div class="insight"><span class="ai"><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Claude</span>
-      <div>${esc(i.text)}</div><div class="src">Nguồn: ${esc((i.refs || []).join(", "))} ${fbBtn((i.refs || [])[0] || "insight", "Insight: " + i.text.slice(0, 60))}</div></div>`).join("")
+      <div>${esc(i.text)}</div><div class="src">${evBtn(i.refs || [])} ${fbBtn((i.refs || [])[0] || "insight", "Insight: " + i.text.slice(0, 60))}</div></div>`).join("")
     : '<div class="empty">Không có insight.</div>';
   const addr = ((S.style || {}).pic_address || {})[S.pic] || {};
   const given = String(S.pic || "").trim().split(/\s+/).pop() || "";
@@ -442,15 +520,27 @@ function wire() {
   $("#copy-slack").onclick = copySlack;
   $("#export").onclick = async () => { if (!S.pic) return; const r = await api.export(S.pic, null, S.runId); if (!bad(r) && r.path) toast("Đã xuất: " + r.path); };
   $("#results-body").addEventListener("click", (e) => {
+    const ev = e.target.closest(".evb");
+    if (ev) { e.stopPropagation(); openEvidence(ev.dataset.ev.split("|")); return; }
     const fb = e.target.closest(".fb");
     if (fb) { e.stopPropagation(); openFb(fb.dataset.unit, fb.dataset.label); return; }
+    if (e.target.closest("#f-reset")) { S.f = { ...F_DEFAULT }; renderResults(); return; }
+    const sortTh = e.target.closest("th[data-sort]");
+    if (sortTh) { const k = sortTh.dataset.sort; S.f.dir = S.f.sort === k ? -S.f.dir : 1; S.f.sort = k; renderResults(); return; }
     if (e.target.closest("#rewrite")) { rewriteMessage(); return; }
     const t = e.target.closest("[data-tab]");
     if (t) { S.tab = t.dataset.tab; renderResults(); return; }
     const row = e.target.closest("tr.expandable[data-pl]");
     if (row) { const pl = row.dataset.pl; S.open.has(pl) ? S.open.delete(pl) : S.open.add(pl); renderResults(); }
   });
-  $("#results-body").addEventListener("change", (e) => { if (e.target.id === "show-low") { S.showLow = e.target.checked; renderResults(); } });
+  const FMAP = { "f-sev": "sev", "f-action": "action", "f-trend": "trend", "f-status": "status", "f-todo-sev": "todoSev", "f-todo-due": "todoDue" };
+  $("#results-body").addEventListener("change", (e) => { if (FMAP[e.target.id]) { S.f[FMAP[e.target.id]] = e.target.value; renderResults(); } });
+  $("#results-body").addEventListener("input", (e) => {
+    if (e.target.id !== "f-q") return;
+    S.f.q = e.target.value;
+    clearTimeout(S.qTimer);
+    S.qTimer = setTimeout(() => { renderResults(); const el = $("#f-q"); el.focus(); el.setSelectionRange(el.value.length, el.value.length); }, 250);
+  });
   $$("#fb-issue button, #st-emoji button").forEach((b) => (b.onclick = () => {
     if (b.parentElement.id === "st-emoji") $$("#st-emoji button").forEach((x) => x.setAttribute("aria-pressed", "false"));
     b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"));
@@ -498,7 +588,10 @@ function wire() {
   $("#wn-close").onclick = $("#wn-later").onclick = () => $("#wn").classList.remove("on");
   $("#wn").onclick = (e) => { if (e.target.id === "wn") $("#wn").classList.remove("on"); };
   $("#wn-install").onclick = install;
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeFb(); $("#wn").classList.remove("on"); } });
+  $("#ev-close").onclick = () => $("#ev").classList.remove("on");
+  $("#ev").onclick = (e) => { if (e.target.id === "ev") $("#ev").classList.remove("on"); };
+  $("#ev-tabs").onclick = (e) => { const b = e.target.closest("[data-evi]"); if (b) { S.ev.i = Number(b.dataset.evi); showEvidence(); } };
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeFb(); $("#wn").classList.remove("on"); $("#ev").classList.remove("on"); } });
 }
 
 async function init() {

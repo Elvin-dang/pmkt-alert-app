@@ -47,7 +47,9 @@ def test_raw_spend_is_sp_sb_sd(loaded):
 
 def test_products_blank_pic_and_activity_columns(loaded):
     assert "" in set(loaded.products["PIC Oct"])
-    assert list(loaded.activity.columns) == ["id", "level", "type", "action", "from_", "to", "time", "user"]
+    assert list(loaded.activity.columns) == ["id", "level", "type", "action", "from_", "to", "time", "user", "_row"]
+    assert loaded.activity["_row"].tolist() == [2, 3, 4, 5, 6]
+    assert loaded.sources["raw"]["sheet"] == "raw_sso_us" and loaded.sources["raw"]["letters"]["sp_spend"]
     assert len(loaded.activity) == 5
 
 

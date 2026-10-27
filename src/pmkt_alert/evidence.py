@@ -1,0 +1,189 @@
+"""Evidence for one result row: which file › sheet › columns › rows produced each number,
+the formulas applied, and the Alert_Logic cells it was compared with."""
+from datetime import date
+
+import pandas as pd
+
+from .aggregate import asin_map, pic_column
+from .logic import Logic
+from .rules.actions import parse_activity
+from .windows import Windows
+
+RAW_COLS = {"gmv": ["ordered_gmv_usd"], "ads_gmv": ["ppc_ordered_gmv_usd"], "spend": ["sp_spend", "sb_spend", "sd_spend"],
+            "clicks": ["ppc_clicks"], "orders": ["ppc_orders"]}
+ADS_COLS = {"spend": ["spend_usd"], "clicks": ["clicks"], "sales": ["sales_14d"], "orders": ["order_14d"]}
+KPI_COLS = {"gmv": ["GMV"], "spend": ["Spend_final"]}
+ROW_LIMIT = 20
+
+
+def row_ranges(rows) -> str:
+    nums = sorted({int(r) for r in rows if r == r and r is not None})
+    out, start = [], None
+    for i, n in enumerate(nums):
+        if start is None:
+            start = n
+        if i == len(nums) - 1 or nums[i + 1] != n + 1:
+            out.append(str(start) if start == n else f"{start}–{n}")
+            start = None
+    return ", ".join(out)
+
+
+def _clean(v):
+    if isinstance(v, float):
+        return None if v != v else round(v, 4)
+    if isinstance(v, date):
+        return v.isoformat()
+    if hasattr(v, "item"):
+        return _clean(v.item())
+    return v
+
+
+def _columns_text(inputs, src: str, mapping: dict) -> str:
+    letters = inputs.sources.get(src, {}).get("letters", {})
+    parts = []
+    for name, cols in mapping.items():
+        refs = " + ".join(f"{c} ({letters[c]})" if c in letters else c for c in cols)
+        parts.append(f"{name} = {refs}")
+    return "; ".join(parts)
+
+
+def _section(inputs, key: str, title: str, src: str, df: pd.DataFrame, filter_text: str, mapping: dict,
+             show: list[str]) -> dict:
+    meta = inputs.sources.get(src, {"file": "?", "sheet": src})
+    rows_col = df["_row"] if "_row" in df.columns else []
+    sample = df[[c for c in show + ["_row"] if c in df.columns]].head(ROW_LIMIT)
+    return {
+        "key": key, "title": title, "source": f"{meta['file']} › {meta['sheet']}",
+        "columns_text": _columns_text(inputs, src, mapping), "filter": filter_text, "row_count": int(len(df)),
+        "row_ranges": row_ranges(rows_col),
+        "rows": [{k: _clean(v) for k, v in r.items()} for r in sample.to_dict("records")],
+        "totals": {c: float(df[c].sum()) for c in mapping if c in df.columns},
+    }
+
+
+def _between(df: pd.DataFrame, span) -> pd.DataFrame:
+    return df[(df["date"] >= span[0]) & (df["date"] <= span[1])]
+
+
+def _span(span) -> str:
+    return f"{span[0]:%d/%m}–{span[1]:%d/%m/%Y}"
+
+
+def _pct(v) -> str:
+    return "—" if v is None else f"{v:.1%}"
+
+
+def _thresholds(logic: Logic, keys: list[str]) -> list[dict]:
+    from .logic import PARAM_LABELS
+    out = []
+    for k in keys:
+        if k in logic.params:
+            label = PARAM_LABELS[k][1]
+            if k in ("trend_spend", "trend_acos", "trend_tacos"):
+                label = f"Ngưỡng thay đổi {label} L7D vs P7D (±)"
+            out.append({"key": k, "label": label, "cell": logic.cells.get(k, "Config"),
+                        "value": logic.params[k], "file": logic.path.name})
+        elif k in logic.k_by_type:
+            out.append({"key": k, "label": f"k (order kỳ vọng) cho {k}", "cell": logic.cells.get(k, "Config"),
+                        "value": logic.k_by_type[k], "file": logic.path.name})
+    return out
+
+
+def _pl_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFrame, pl: str) -> dict:
+    row = next((r for r in rj["pl"] if r["pl"] == pl), None)
+    if row is None:
+        raise ValueError(f"Không có Product Line '{pl}' trong lần chạy này")
+    asins = set(amap.loc[amap["pl"] == pl, "asin"])
+    pic_col = pic_column(list(inputs.products.columns), win.as_of)
+    raw = inputs.raw[inputs.raw["asin"].isin(asins)]
+    ads = inputs.ads[inputs.ads["asin"].isin(asins)]
+    kpi = inputs.kpi[(inputs.kpi["asin"].isin(asins)) & (inputs.kpi["month"] == win.as_of.month)]
+    prods = inputs.products[inputs.products["asin"].isin(asins)]
+    asin_txt = f"{len(asins)} ASIN của PL (product_line_old = '{pl}')"
+    raw_show = ["date", "asin", "sku", "gmv", "ads_gmv", "spend"]
+    sections = [
+        _section(inputs, "mapping", "Mapping ASIN → PL → PIC", "products", prods, f"product_line_old = '{pl}' · PIC lấy từ cột {pic_col}",
+                 {}, ["asin", "sku", "pl", pic_col, "status"]),
+        _section(inputs, "kpi", f"Target tháng {win.as_of.month}", "kpi", kpi, f"Month = {win.as_of.month} · {asin_txt}",
+                 KPI_COLS, ["month", "asin", "gmv", "spend"]),
+        _section(inputs, "raw_mtd", f"Thực tế MTD ({_span(win.mtd)})", "raw", _between(raw, win.mtd), f"report_date {_span(win.mtd)} · {asin_txt}",
+                 RAW_COLS, raw_show),
+        _section(inputs, "raw_l7d", f"L7D ({_span(win.l7d)})", "raw", _between(raw, win.l7d), f"report_date {_span(win.l7d)} · {asin_txt}",
+                 RAW_COLS, raw_show),
+        _section(inputs, "raw_p7d", f"P7D ({_span(win.p7d)})", "raw", _between(raw, win.p7d), f"report_date {_span(win.p7d)} · {asin_txt}",
+                 RAW_COLS, raw_show),
+        _section(inputs, "ads_l7d", "ACoS/CR chuẩn của PL (ads_camp L7D)", "ads", _between(ads, win.l7d),
+                 f"report_date {_span(win.l7d)} · mọi campaign có ASIN của PL", ADS_COLS,
+                 ["date", "campaign_id", "asin", "spend", "clicks", "sales", "orders"]),
+    ]
+    g = lambda k: row.get(k)  # noqa: E731
+    calc = [
+        {"label": "%GMV vs target", "formula": f"{g('gmv_mtd'):,.2f} ÷ {g('target_gmv'):,.2f}", "value": _pct(g("pct_gmv"))},
+        {"label": "%Spend vs target", "formula": f"{g('spend_mtd'):,.2f} ÷ {g('target_spend'):,.2f}", "value": _pct(g("pct_spend"))},
+        {"label": "GMV pace", "formula": f"{_pct(g('pct_gmv'))} ÷ time gone {win.time_gone:.1%}", "value": f"{g('gmv_pace'):.2f}"},
+        {"label": "Spend pace", "formula": f"{_pct(g('pct_spend'))} ÷ time gone {win.time_gone:.1%}", "value": f"{g('spend_pace'):.2f}"},
+        {"label": "TACoS ÷ target", "formula": f"{_pct(g('actual_tacos'))} ÷ {_pct(g('target_tacos'))}", "value": f"{g('tacos_ratio'):.2f}"},
+        {"label": "Pacing", "formula": "Thứ tự rule: NO PLAN → KHÔNG CHẠY → SCALE DOWN → OPTIMIZE → SCALE UP → BUDGET CAP → CHECK → MAINTAIN",
+         "value": f"{g('pacing_action')} ({g('pacing_sev')})"},
+        {"label": "Δ Spend / Δ ACoS / Δ TACoS (L7D vs P7D)", "formula": f"key {g('trend_key')} tra Matrix_PL",
+         "value": " / ".join("—" if g(k) is None else f"{g(k):+.0%}" for k in ("d_spend", "d_acos", "d_tacos"))
+         + (f" → {g('trend_label')}" if g("trend_label") else " → (không nhãn)")},
+    ]
+    thresholds = _thresholds(logic, ["gmv_pace_low", "spend_pace_low", "spend_pace_high", "tacos_over", "not_running",
+                                     "budget_cap", "trend_spend", "trend_acos", "trend_tacos", "trend_min_spend"])
+    mkey = f"matrix:{g('trend_key')}"
+    if mkey in logic.cells:
+        thresholds.append({"key": "matrix", "label": f"Matrix_PL {g('trend_key')}", "cell": logic.cells[mkey],
+                           "value": logic.matrix[g("trend_key")][0] or "(trống)", "file": logic.path.name})
+    return {"unit_id": row["unit_id"], "title": f"{pl} · {g('pacing_action')}", "sections": sections, "calc": calc,
+            "thresholds": thresholds}
+
+
+def _camp_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFrame, unit_id: str) -> dict:
+    row = next((r for r in rj["camp"] if r["unit_id"] == unit_id), None)
+    if row is None:
+        raise ValueError(f"Không có campaign '{unit_id}' trong lần chạy này")
+    cid, pl = row["campaign_id"], row["pl"]
+    asins = set(amap.loc[amap["pl"] == pl, "asin"])
+    ads = inputs.ads[(inputs.ads["campaign_id"] == cid) & (inputs.ads["asin"].isin(asins))]
+    base = inputs.ads[inputs.ads["asin"].isin(asins)]
+    show = ["date", "campaign_id", "asin", "spend", "clicks", "sales", "orders"]
+    filt = f"campaign_id = {cid} · ASIN thuộc PL '{pl}'"
+    acts = parse_activity(inputs.activity)
+    acts = acts[(acts["camp_key"] == row.get("camp_key")) & (acts["action_date"] <= win.as_of)]
+    sections = [
+        _section(inputs, "ads_l7d", f"Campaign L7D ({_span(win.l7d)})", "ads", _between(ads, win.l7d), filt, ADS_COLS, show),
+        _section(inputs, "ads_p7d", f"Campaign P7D ({_span(win.p7d)})", "ads", _between(ads, win.p7d), filt, ADS_COLS, show),
+        _section(inputs, "ads_l3d", f"Campaign L3D ({_span(win.l3d)})", "ads", _between(ads, win.l3d), filt, ADS_COLS, show),
+        _section(inputs, "ads_pl_l7d", "ACoS/CR chuẩn của PL (ads_camp L7D)", "ads", _between(base, win.l7d),
+                 f"mọi campaign có ASIN của PL '{pl}'", ADS_COLS, show),
+        {**_section(inputs, "activity", "Activity Log (khớp theo tên campaign)", "activity", acts,
+                    f"campaign = '{row.get('campaign')}' (tên đã chuẩn hoá, bỏ hậu tố _ID) · ngày ≤ {win.as_of:%d/%m}", {},
+                    ["action_date", "category", "user"])},
+    ]
+    g = lambda k: row.get(k)  # noqa: E731
+    calc = [
+        {"label": "ACoS L7D camp", "formula": f"{g('l7d_spend'):,.2f} ÷ {g('l7d_sales'):,.2f}", "value": _pct(g("l7d_acos"))},
+        {"label": "ACoS L7D của PL", "formula": "spend ÷ sales của mọi campaign trong PL (L7D)", "value": _pct(g("pl_acos"))},
+        {"label": "ACoS camp ÷ ACoS PL", "formula": f"{_pct(g('l7d_acos'))} ÷ {_pct(g('pl_acos'))}",
+         "value": "—" if g("acos_ratio") is None else f"{g('acos_ratio'):.2f}×"},
+        {"label": "Min clicks", "formula": f"MAX(sàn, ROUNDUP(k ÷ CR PL {_pct(g('pl_cr'))}))", "value": f"{g('min_clicks')} (có {g('l7d_clicks'):.0f})"},
+        {"label": "Excess spend", "formula": f"MAX(0, {g('l7d_spend'):,.2f} − {g('l7d_sales'):,.2f} × {_pct(g('pl_acos'))})",
+         "value": f"${g('excess'):,.2f}"},
+        {"label": "Action", "formula": f"PL đang {g('pl_action')}", "value": f"{g('base_action')} ({g('sev') or 'không mức'})"},
+        {"label": "Trạng thái action", "formula": "Activity Log trong cửa sổ L3D", "value": g("final_label") or "—"},
+    ]
+    thresholds = _thresholds(logic, ["camp_cut", "camp_good", "camp_optimize", "min_clicks", "excess_high", g("type"),
+                                     "trend_acos", "action_window", "followup_days", "improving_ratio"])
+    return {"unit_id": unit_id, "title": f"{g('campaign')} · {g('base_action')}", "sections": sections, "calc": calc,
+            "thresholds": thresholds}
+
+
+def evidence(inputs, logic: Logic, rj: dict, unit_id: str) -> dict:
+    win = Windows(date.fromisoformat(rj["as_of"]))
+    amap = asin_map(inputs.products, win.as_of)
+    if unit_id.startswith("pl:"):
+        return _pl_evidence(inputs, logic, rj, win, amap, unit_id[3:])
+    if unit_id.startswith("camp:"):
+        return _camp_evidence(inputs, logic, rj, win, amap, unit_id)
+    raise ValueError(f"Không có bằng chứng cho '{unit_id}'")

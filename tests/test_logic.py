@@ -59,3 +59,11 @@ def test_missing_readme_sheet_created(tmp_path):
     wb = openpyxl.load_workbook(src); del wb["README_Flow"]; wb.save(src)
     out = write_logic_version(load_logic(src), {"camp_cut": 1.2}, "n", tmp_path / "o")
     assert "README_Flow" in openpyxl.load_workbook(out).sheetnames
+
+
+def test_logic_records_cell_refs(tmp_path):
+    lg = load_logic(make_logic(tmp_path / "Alert_Logic_Ver 1.xlsx"))
+    assert lg.cells["camp_cut"].startswith("Config!C") and lg.cells["matrix:U|U|U"] == "Matrix_PL!F5"
+    from openpyxl import load_workbook
+    ws = load_workbook(lg.path)["Config"]
+    assert ws[lg.cells["camp_cut"].split("!")[1]].value == 1.15

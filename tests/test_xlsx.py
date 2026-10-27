@@ -30,3 +30,10 @@ def test_rows_wider_than_header_keep_extra_cells(tmp_path):
     p = write_xlsx(tmp_path / "a.xlsx", {"S": [[None, "README"], [None, "Ver 2", "note"]]})
     df = read_sheet(p, "S")
     assert df.iloc[0].tolist() == [None, "Ver 2", "note"]
+
+
+def test_excel_rows_and_column_letters(tmp_path):
+    from pmkt_alert.xlsx import read_sheet_with_rows
+    p = write_xlsx(tmp_path / "a.xlsx", {"S": [["t"], ["k", "v"], ["x", 1], [None, None], ["y", 2]]})
+    df, letters = read_sheet_with_rows(p, "S", header_row=2)
+    assert df["_row"].tolist() == [3, 5] and letters == {"k": "A", "v": "B"}

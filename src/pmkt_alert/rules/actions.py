@@ -67,7 +67,7 @@ def _campaign_of(level) -> str | None:
 
 def parse_activity(raw: pd.DataFrame) -> pd.DataFrame:
     rows, skipped, aliases = [], 0, {}
-    for r in raw.itertuples(index=False):
+    for r in raw.rename(columns={"_row": "row_no"}).itertuples(index=False):  # itertuples drops "_" names
         name = _campaign_of(r.level)
         if name is None:
             continue
@@ -79,7 +79,8 @@ def parse_activity(raw: pd.DataFrame) -> pd.DataFrame:
             old, new = normalize_name(r.from_), normalize_name(r.to)
             aliases[old] = new
             aliases.setdefault(normalize_name(name), new)
-        rows.append((normalize_name(name), when, category(r.type, r.action, r.from_, r.to), str(r.user or "").strip().lower()))
+        rows.append((normalize_name(name), when, category(r.type, r.action, r.from_, r.to), str(r.user or "").strip().lower(),
+                     getattr(r, "row_no", None)))
 
     def canonical(k: str) -> str:
         seen = set()
@@ -88,8 +89,8 @@ def parse_activity(raw: pd.DataFrame) -> pd.DataFrame:
             k = aliases[k]
         return k
 
-    out = pd.DataFrame([(canonical(k), t.date(), t, c, u) for k, t, c, u in rows],
-                       columns=["camp_key", "action_date", "time", "category", "user"]).sort_values("time")
+    out = pd.DataFrame([(canonical(k), t.date(), t, c, u, n) for k, t, c, u, n in rows],
+                       columns=["camp_key", "action_date", "time", "category", "user", "_row"]).sort_values("time")
     out = out.drop(columns="time").reset_index(drop=True)
     out.attrs["skipped"] = skipped
     out.attrs["aliases"] = {k: canonical(k) for k in aliases}

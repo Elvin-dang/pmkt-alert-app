@@ -13,6 +13,7 @@ from .backtest import apply_approved, propose_from_feedback, proposals_from_revi
 from .claude import ClaudeError, ask, check_status, grounded, open_login
 from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
+from .evidence import evidence
 from .export import export_pic
 from .loaders import ROLES, InputError, detect_inputs, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
@@ -173,6 +174,18 @@ class Api:
                 self._log(traceback.format_exc())
             self._progress("claude", "done" if ai["claude_ok"] else "warn", ai["error"] or "")
         return {"run_id": run_id, "result": rj, "ai": ai}
+
+    @safe
+    def evidence(self, unit_id: str, run_id: str | None = None) -> dict:
+        run = self._store.load_run(run_id) if run_id else self._latest()
+        if not run:
+            raise ValueError("Không tìm thấy lần chạy")
+        rj = run["result"]
+        logic_path = next((p for v, p in self._store.logic_versions() if v == rj["logic_version"]), None) \
+            or self._store.active_logic()
+        ev = evidence(self._ensure_inputs(), load_logic(logic_path), rj, unit_id)
+        return {**ev, "files": rj.get("inputs", {}).get("files", {}), "logic_file": Path(logic_path).name,
+                "as_of": rj["as_of"]}
 
     @safe
     def results(self, run_id: str | None = None) -> dict:

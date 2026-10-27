@@ -252,3 +252,14 @@ def test_rewrite_message_rejects_made_up_numbers(tmp_path, synthetic_paths):
     before = api.results(run["run_id"])["ai"]["per_pic"]["PIC A"]["slack"]
     out = api.rewrite_message("PIC A", run["run_id"])
     assert "error" in out and api.results(run["run_id"])["ai"]["per_pic"]["PIC A"]["slack"] == before
+
+
+def test_evidence_endpoint(tmp_path, synthetic_paths):
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("x")))
+    run = api.run(paths(synthetic_paths))
+    ev = api.evidence("pl:PL Alpha", run["run_id"])
+    assert ev["unit_id"] == "pl:PL Alpha" and ev["sections"][0]["source"].endswith("Product Info")
+    assert ev["files"]["tracker"] == "tracker.xlsx" and ev["logic_file"] == "Alert_Logic_Ver 1.xlsx"
+    assert "error" in api.evidence("pl:Nope", run["run_id"])
+    import json
+    json.dumps(ev, allow_nan=False)

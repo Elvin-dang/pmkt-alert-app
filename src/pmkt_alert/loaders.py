@@ -6,7 +6,7 @@ from pathlib import Path
 import openpyxl
 import pandas as pd
 
-from .xlsx import read_sheet, sheet_names, to_num
+from .xlsx import read_sheet, read_sheet_with_rows, sheet_names, to_num
 
 ROLES = ("tracker", "ads", "activity", "logic", "defind")
 ROLE_HINT = {
@@ -33,6 +33,7 @@ class Inputs:
     activity: pd.DataFrame
     event_days: dict[date, str] = field(default_factory=dict)
     defind_text: str = ""
+    sources: dict = field(default_factory=dict)  # name → {"file", "sheet", "letters"} for evidence
 
 
 def _first_row(path: Path) -> list[str]:
@@ -135,28 +136,37 @@ def _event_days(path: Path) -> dict[date, str]:
 def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
     """account: ads_camp account_name to keep; None = the account with the most rows."""
     t = roles["tracker"]
-    raw = read_sheet(t, "raw_sso_us")
+    sources = {}
+
+    def src(name: str, path: Path, sheet: str, letters: dict) -> None:
+        sources[name] = {"file": Path(path).name, "sheet": sheet, "letters": letters}
+
+    raw, letters = read_sheet_with_rows(t, "raw_sso_us")
+    src("raw", t, "raw_sso_us", letters)
     _need(raw, ["report_date", "asin", "sku", "ordered_gmv_usd", "ppc_ordered_gmv_usd", "sp_spend", "sb_spend",
                 "sd_spend", "ppc_clicks", "ppc_orders"], "raw_sso_us")
     raw = pd.DataFrame({
         "date": _to_date(raw["report_date"]), "asin": raw["asin"].astype(str), "sku": raw["sku"].astype(str),
         "gmv": to_num(raw["ordered_gmv_usd"]), "ads_gmv": to_num(raw["ppc_ordered_gmv_usd"]),
         "spend": to_num(raw["sp_spend"]) + to_num(raw["sb_spend"]) + to_num(raw["sd_spend"]),
-        "clicks": to_num(raw["ppc_clicks"]), "orders": to_num(raw["ppc_orders"]),
+        "clicks": to_num(raw["ppc_clicks"]), "orders": to_num(raw["ppc_orders"]), "_row": raw["_row"],
     }).dropna(subset=["date"])
 
-    info = read_sheet(t, "Product Info")
+    info, letters = read_sheet_with_rows(t, "Product Info")
+    src("products", t, "Product Info", letters)
     _need(info, ["asin", "sku", "product_line_old", "status"], "Product Info")
     pic_cols = [c for c in info.columns if c.startswith("PIC ") or c == "PMKT PIC_Final"]
     products = pd.DataFrame({"asin": info["asin"].astype(str), "sku": info["sku"].astype(str),
-                             "pl": _clean_text(info["product_line_old"]), "status": _clean_text(info["status"])})
+                             "pl": _clean_text(info["product_line_old"]), "status": _clean_text(info["status"]),
+                             "_row": info["_row"]})
     for c in pic_cols:
         products[c] = _clean_text(info[c])
 
-    k = read_sheet(t, "KPI")
+    k, letters = read_sheet_with_rows(t, "KPI")
+    src("kpi", t, "KPI", letters)
     _need(k, ["Month", "ASIN", "GMV", "Spend_final"], "KPI")
     kpi = pd.DataFrame({"month": to_num(k["Month"]).astype(int), "asin": k["ASIN"].astype(str),
-                        "gmv": to_num(k["GMV"]), "spend": to_num(k["Spend_final"])})
+                        "gmv": to_num(k["GMV"]), "spend": to_num(k["Spend_final"]), "_row": k["_row"]})
 
     if "INELIGIBLE ASIN" in sheet_names(t):
         ie = read_sheet(t, "INELIGIBLE ASIN")
@@ -167,7 +177,8 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
     else:
         ineligible = pd.DataFrame(columns=["date", "asin", "status", "reason"])
 
-    a = read_sheet(roles["ads"], "ads_camp")
+    a, letters = read_sheet_with_rows(roles["ads"], "ads_camp")
+    src("ads", roles["ads"], "ads_camp", letters)
     _need(a, ["report_date", "account_name", "campaign_type", "campaign_id", "campaign_name", "asin",
               "spend_usd", "clicks", "sales_14d", "order_14d"], "ads_camp")
     names = a["account_name"].astype(str).str.strip()
@@ -181,22 +192,24 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
         "campaign_id": a["campaign_id"].map(lambda v: str(int(v)) if isinstance(v, (int, float)) else str(v).strip()),
         "campaign": a["campaign_name"].astype(str), "asin": a["asin"].astype(str),
         "spend": to_num(a["spend_usd"]), "clicks": to_num(a["clicks"]),
-        "sales": to_num(a["sales_14d"]), "orders": to_num(a["order_14d"]),
+        "sales": to_num(a["sales_14d"]), "orders": to_num(a["order_14d"]), "_row": a["_row"],
     }).dropna(subset=["date"]).reset_index(drop=True)
     ads.attrs["accounts"], ads.attrs["account"] = list(accounts.index), chosen
 
-    log = read_sheet(roles["activity"])
+    log, letters = read_sheet_with_rows(roles["activity"])
+    src("activity", roles["activity"], sheet_names(roles["activity"])[0], letters)
     cols = ["id", "level", "type", "action", "from_", "to", "time", "user"]
     if log.empty:
-        activity = pd.DataFrame(columns=cols)
+        activity = pd.DataFrame(columns=cols + ["_row"])
     else:
-        activity = log.iloc[:, :8].copy()
+        activity = log.drop(columns="_row").iloc[:, :8].copy()
         activity.columns = cols[: activity.shape[1]]
         activity = activity.reindex(columns=cols)
+        activity["_row"] = log["_row"].values
 
     d = read_sheet(roles["defind"])
     defind_text = "\n".join(" | ".join(str(v) for v in row if v not in (None, "") and not pd.isna(v))
                             for row in [list(d.columns)] + d.values.tolist())
     defind_text = defind_text.replace("col0 | ", "")
 
-    return Inputs(raw, products, kpi, ineligible, ads, activity, _event_days(t), defind_text)
+    return Inputs(raw, products, kpi, ineligible, ads, activity, _event_days(t), defind_text, sources)

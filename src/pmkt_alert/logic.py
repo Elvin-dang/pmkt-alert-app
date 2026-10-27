@@ -2,7 +2,7 @@
 label text in Config column B (within its A–E section), never by cell position."""
 import re
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -44,6 +44,7 @@ class Logic:
     k_by_type: dict[str, float]
     matrix: dict[str, tuple[str, str]]
     tiers_text: str
+    cells: dict[str, str] = field(default_factory=dict)  # key → "Config!C22" / "matrix:KEY" → "Matrix_PL!F5"
 
 
 def version_from_name(name: str) -> int:
@@ -82,25 +83,27 @@ def load_logic(path: Path) -> Logic:
     path = Path(path)
     wb = openpyxl.load_workbook(path, data_only=True)
     try:
-        params, k_by_type = {}, {}
-        for _, kind, key, value in _scan_config(wb["Config"]):
+        params, k_by_type, cells = {}, {}, {}
+        for row, kind, key, value in _scan_config(wb["Config"]):
             (params if kind == "param" else k_by_type)[key] = float(value)
+            cells[key] = f"Config!C{row}"
         missing = [k for k in PARAM_LABELS if k not in params]
         if missing:
             raise LogicError("Thiếu tham số: " + ", ".join(missing))
         matrix = {}
-        for row in wb["Matrix_PL"].iter_rows(min_row=5, values_only=True):
+        for n, row in enumerate(wb["Matrix_PL"].iter_rows(min_row=5, values_only=True), 5):
             if row and isinstance(row[0], str) and re.fullmatch(r"[UFD]\|[UFD]\|[UFD]", row[0]):
                 matrix[row[0]] = (row[5] or "", row[6] or "")
+                cells[f"matrix:{row[0]}"] = f"Matrix_PL!F{n}"
         tiers = []
         if "Logic_Tiers" in wb.sheetnames:
             for row in wb["Logic_Tiers"].iter_rows(values_only=True):
-                cells = [str(v) for v in row if v not in (None, "")]
-                if cells:
-                    tiers.append(" | ".join(cells))
+                texts = [str(v) for v in row if v not in (None, "")]
+                if texts:
+                    tiers.append(" | ".join(texts))
     finally:
         wb.close()
-    return Logic(path, version_from_name(path.name), params, k_by_type, matrix, "\n".join(tiers))
+    return Logic(path, version_from_name(path.name), params, k_by_type, matrix, "\n".join(tiers), cells)
 
 
 def write_logic_version(logic: Logic, changes: dict[str, float | str], note: str, out_dir: Path) -> Path:
