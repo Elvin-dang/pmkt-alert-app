@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from .claude import ClaudeError, ask, filter_grounded, grounded
-from .logic import PARAM_LABELS, Logic
+from .logic import Logic, valid_change
 from .prompts import CAMP_FIELDS, INSIGHTS_SCHEMA, PL_FIELDS, REVIEW_SCHEMA, insights_prompt, review_prompt
 from .store import Store
 from .windows import Windows
@@ -29,13 +29,6 @@ def pic_rows(result_json: dict, pic: str) -> dict:
     return {"pl": [{k: r.get(k) for k in PL_FIELDS} for r in pl_top],
             "camp": [{k: r.get(k) for k in CAMP_FIELDS} for r in camp_top],
             "all": {r["unit_id"]: r for r in pl + camp}}
-
-
-def _valid_param(f: dict, logic: Logic) -> bool:
-    key = f.get("param_key") or ""
-    if key in PARAM_LABELS:
-        return isinstance(f.get("proposed_value"), (int, float))
-    return key.startswith("matrix:") and key[7:] in logic.matrix and isinstance(f.get("proposed_value"), str)
 
 
 def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, defind_text: str,
@@ -72,7 +65,7 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
             return []
         findings = out["findings"]
         for f in findings:
-            if f["kind"] == "param" and not _valid_param(f, logic):
+            if f["kind"] == "param" and not valid_change(f.get("param_key") or "", f.get("proposed_value"), logic):
                 f["kind"] = "rule"
         return findings
 

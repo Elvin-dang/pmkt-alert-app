@@ -34,3 +34,11 @@ def test_write_version(tmp_path):
     assert new.params["camp_cut"] == 1.25 and new.matrix["U|F|F"][0] == "REVIEW ADS" and new.version == 2
     assert load_logic(src).params["camp_cut"] == 1.15
     assert "CUT 1.15→1.25" in str(read_sheet(out, "README_Flow", header_row=1).to_dict())
+
+
+def test_valid_change(tmp_path):
+    from pmkt_alert.logic import valid_change
+    lg = load_logic(make_logic(tmp_path / "Alert_Logic_Ver 1.xlsx"))
+    assert valid_change("camp_cut", 1.25, lg) and not valid_change("camp_cut", "x", lg)
+    assert valid_change("matrix:F|F|F", "REVIEW ADS", lg) and not valid_change("matrix:Z", "X", lg)
+    assert not valid_change("nope", 1, lg)

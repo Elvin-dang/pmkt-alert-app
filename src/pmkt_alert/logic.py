@@ -123,3 +123,9 @@ def write_logic_version(logic: Logic, changes: dict[str, float | str], note: str
     wb["README_Flow"].append(["", f"Ver {n} – {date.today():%d/%m/%Y}", note])
     wb.save(out)
     return out
+
+
+def valid_change(key: str, value, logic: Logic) -> bool:
+    if key in PARAM_LABELS:
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    return key.startswith("matrix:") and key[7:] in logic.matrix and isinstance(value, str)
