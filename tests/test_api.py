@@ -392,10 +392,10 @@ def test_claude_evaluates_logic_issues(tmp_path, synthetic_paths):
 
 def test_whats_new_shows_once_per_version(tmp_path, monkeypatch):
     import pmkt_alert.api as api_mod
-    monkeypatch.setattr(api_mod, "__version__", "0.1.4")
+    monkeypatch.setattr(api_mod, "__version__", "0.1.6")
     api = Api(Store(tmp_path), status_fn=OK)
     w = api.whats_new()
-    assert w["version"] == "0.1.4" and w["show"] is True and "terminal" in w["notes"] and w["previous"]
+    assert w["version"] == "0.1.6" and w["show"] is True and "terminal" in w["notes"] and w["previous"]
     api.mark_whats_new_seen()
     assert api.whats_new()["show"] is False
 

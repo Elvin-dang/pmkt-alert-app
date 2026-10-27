@@ -2,25 +2,27 @@
 
 Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản phát hành sẽ không build nếu thiếu mục cho phiên bản đó.
 
-## v0.1.5 – 27/10/2026
+## v0.1.6 – 27/10/2026
+Bản này gồm toàn bộ thay đổi của v0.1.4 và v0.1.5 (hai bản đó build lỗi nên chưa từng phát hành).
 ### Mới
-- File đầu vào có thể là **.csv** hoặc **.xlsx** (trộn được). File Tracking dạng CSV gồm 3 file: raw_sso_us, Product Info, KPI (INELIGIBLE ASIN tuỳ chọn) – app nhận diện theo cột, không theo tên. CSV đọc nhanh hơn ~4 lần.
-- Hỗ trợ CSV phân cách bằng dấu phẩy / chấm phẩy / tab, có hoặc không có BOM; ngày dạng 2026-10-25 hoặc 25/10/2026.
+- Hỗ trợ **mô hình chấm điểm v3** (file Alert_Logic có trọng số w1–w6): phạm vi theo Team Label, khung Department (regime CÒN ROOM / VƯỢT), điểm 6 yếu tố cho từng PIC và PL, chốt chặn Excess$ vs Dept – khớp chính xác file v3. App tự nhận biết file dùng mô hình nào.
+- Kết quả hiện khung Department, action + điểm của PIC, cột Điểm; bằng chứng cho cả PIC. SCALE UP hiển thị màu xanh lá.
+- File đầu vào có thể là **.csv** hoặc **.xlsx** (trộn được). Tracking dạng CSV gồm 3 file: raw_sso_us, Product Info, KPI (INELIGIBLE ASIN tuỳ chọn). CSV đọc nhanh hơn ~4 lần. Hỗ trợ phân cách , ; tab, có/không BOM, ngày 2026-10-25 hoặc 25/10/2026.
+- File Alert_Logic có lỗi không còn làm dừng lần chạy: app dùng giá trị dự phòng, liệt kê từng lỗi theo ô; Claude đánh giá lỗi nào nghiêm trọng / nên sửa / bỏ qua được kèm hướng dẫn sửa.
+- Nút **Dừng** khi đang chạy: dừng ngay các lệnh Claude, vẫn giữ đầy đủ kết quả rule.
+- Cập nhật app chạy ngầm, không còn mở cửa sổ terminal; nếu lỗi sẽ tự mở lại bản cũ và ghi `update.log`.
+- Cửa sổ "Có gì mới" tự hiện một lần sau mỗi lần cập nhật; ghi chú phát hành lấy từ CHANGELOG.
+### Sửa lỗi
+- Nút Dừng trên Windows dừng được cả Claude cài bằng npm (dừng toàn bộ tiến trình con).
 ### Lưu ý
+- Máy đang dùng v0.1.1–v0.1.3 cần **tải thủ công bản này một lần** (cơ chế cập nhật cũ có lỗi). Từ bản này trở đi cập nhật tự động bình thường.
 - File logic (Alert_Logic) vẫn phải là .xlsx.
 
+## v0.1.5 – 27/10/2026
+- Không phát hành (build lỗi) – nội dung nằm trong v0.1.6.
+
 ## v0.1.4 – 27/10/2026
-### Mới
-- Cập nhật app chạy ngầm, không còn mở cửa sổ terminal; nếu lỗi sẽ tự mở lại bản cũ và ghi `update.log`.
-- Cửa sổ "Có gì mới" tự hiện một lần sau mỗi lần cập nhật.
-- Nút **Dừng** khi đang chạy: dừng ngay các lệnh Claude, vẫn giữ đầy đủ kết quả rule.
-- Hỗ trợ **mô hình chấm điểm v3** (file Alert_Logic có trọng số w1–w6): phạm vi theo Team Label, khung Department (regime CÒN ROOM / VƯỢT), điểm 6 yếu tố cho từng PIC và PL, chốt chặn Excess$ vs Dept – khớp chính xác file v3. App tự nhận biết file dùng mô hình nào.
-- Kết quả hiện khung Department, action + điểm của PIC, cột Điểm; bằng chứng cho cả PIC.
-- SCALE UP hiển thị màu xanh lá.
-- File Alert_Logic có lỗi không còn làm dừng lần chạy: app dùng giá trị dự phòng, liệt kê từng lỗi theo ô, và Claude đánh giá lỗi nào nghiêm trọng / nên sửa / bỏ qua được kèm hướng dẫn sửa.
-- Đọc được file logic có bố cục khác (đổi thứ tự / tên mục), liệt kê các tham số app chưa dùng.
-### Lưu ý
-- Máy đang dùng v0.1.1–v0.1.3 cần tải thủ công bản này một lần (cơ chế cập nhật cũ có lỗi). Từ bản này trở đi cập nhật tự động bình thường.
+- Không phát hành (build lỗi) – nội dung nằm trong v0.1.6.
 
 ## v0.1.3 – 27/10/2026
 ### Mới
