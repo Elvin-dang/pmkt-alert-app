@@ -34,8 +34,17 @@ def pic_rows(result_json: dict, pic: str) -> dict:
 def _ask_twice(ask_fn, prompt: str, schema: dict) -> dict:
     try:
         return ask_fn(prompt, schema)
-    except ClaudeError:
+    except ClaudeError as e:
+        if not e.retryable:
+            raise
         return ask_fn(prompt, schema)
+
+
+def offline(result_json: dict, reason: str) -> dict:
+    """AI section when Claude is not usable: rule-based Slack text only."""
+    return {"claude_ok": False, "error": reason, "review": [],
+            "per_pic": {d["pic"]: {"insights": [], "todos": [], "slack": fallback_slack(d, result_json["as_of"]),
+                                   "dropped": 0, "error": reason} for d in result_json["digest"]}}
 
 
 def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, defind_text: str,
@@ -44,6 +53,19 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
     style = store.get_style()
     context = {"time_gone": Windows(date.fromisoformat(result_json["as_of"])).time_gone}
     errors: list[str] = []
+    fatal: list[str] = []  # first non-retryable error stops calls that have not started yet
+
+    def call(prompt: str, schema: dict) -> dict:
+        if fatal:
+            raise ClaudeError(fatal[0])
+        try:
+            return _ask_twice(ask_fn, prompt, schema)
+        except ClaudeError as e:
+            if not e.retryable:
+                fatal.append(str(e))
+            raise
+        except Exception as e:  # e.g. decode errors from the CLI – never lose the rule results
+            raise ClaudeError(f"Lỗi khi gọi Claude: {e}") from e
 
     def one_pic(d: dict) -> tuple[str, dict]:
         pic = d["pic"]
@@ -55,7 +77,7 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
         inel = [x for x in (ineligible or []) if x.get("pic") == pic]
         prompt = insights_prompt(pic, rows, d, logic, lessons, style, defind_text, inel)
         try:
-            out = _ask_twice(ask_fn, prompt, INSIGHTS_SCHEMA)
+            out = call(prompt, INSIGHTS_SCHEMA)
         except ClaudeError as e:
             errors.append(str(e))
             return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0, "error": str(e)}
@@ -68,7 +90,7 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
 
     def review() -> list[dict]:
         try:
-            out = _ask_twice(ask_fn, review_prompt(result_json, logic, event_days, store.list_feedback()), REVIEW_SCHEMA)
+            out = call(review_prompt(result_json, logic, event_days, store.list_feedback()), REVIEW_SCHEMA)
         except ClaudeError as e:
             errors.append(str(e))
             return []

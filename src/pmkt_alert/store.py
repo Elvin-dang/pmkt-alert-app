@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sys
+import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -22,11 +23,21 @@ def default_base() -> Path:
     return Path.home() / ".pmkt-alert"
 
 
+def _locked(fn):
+    def wrapper(self, *a, **k):
+        with self._lock:
+            return fn(self, *a, **k)
+    return wrapper
+
+
 def _id() -> str:
     return uuid.uuid4().hex[:8]
 
 
 class Store:
+    # pywebview runs each JS call on its own thread; all read-modify-write goes through this lock.
+    _lock = threading.RLock()
+
     def __init__(self, base: Path):
         self.base = Path(base)
         for d in ("runs", "logic"):
@@ -34,6 +45,10 @@ class Store:
 
     # ------------------------------------------------------------- json io
     def _read(self, name: str, default):
+        with self._lock:
+            return self._read_unlocked(name, default)
+
+    def _read_unlocked(self, name: str, default):
         p = self.base / name
         if not p.exists():
             return default
@@ -46,9 +61,10 @@ class Store:
     def _write(self, name: str, data) -> None:
         p = self.base / name
         p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_name(p.name + ".tmp")
-        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-        os.replace(tmp, p)
+        tmp = p.with_name(f"{p.name}.{uuid.uuid4().hex[:6]}.tmp")
+        with self._lock:
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, p)
 
     # ------------------------------------------------------------- runs
     def save_run(self, result_json: dict, ai_json: dict | None) -> str:
@@ -61,6 +77,7 @@ class Store:
     def load_run(self, run_id: str) -> dict:
         return self._read(f"runs/{run_id}.json", {})
 
+    @_locked
     def update_run_ai(self, run_id: str, ai_json: dict) -> None:
         run = self.load_run(run_id)
         run["ai"] = ai_json
@@ -80,6 +97,7 @@ class Store:
         return out
 
     # ------------------------------------------------------------- feedback / lessons
+    @_locked
     def add_feedback(self, item: dict) -> str:
         items = self._read("feedback.json", [])
         fid = _id()
@@ -90,6 +108,7 @@ class Store:
     def list_feedback(self, status: str | None = None) -> list[dict]:
         return [f for f in self._read("feedback.json", []) if status is None or f.get("status") == status]
 
+    @_locked
     def set_feedback_status(self, fid: str, status: str) -> None:
         items = self._read("feedback.json", [])
         for f in items:
@@ -100,6 +119,7 @@ class Store:
     def lessons(self) -> list[dict]:
         return self._read("lessons.json", [])
 
+    @_locked
     def add_lesson(self, text: str, source: str) -> str:
         items = self.lessons()
         lid = _id()
@@ -107,6 +127,7 @@ class Store:
         self._write("lessons.json", items)
         return lid
 
+    @_locked
     def delete_lesson(self, lid: str) -> None:
         self._write("lessons.json", [x for x in self.lessons() if x["id"] != lid])
 
@@ -115,8 +136,10 @@ class Store:
         return {**DEFAULT_STYLE, **self._read("style.json", {})}
 
     def save_style(self, d: dict) -> None:
-        self._write("style.json", {**self.get_style(), **d})
+        with self._lock:
+            self._write("style.json", {**self.get_style(), **d})
 
+    @_locked
     def add_style_sample(self, text: str) -> None:
         style = self.get_style()
         style["samples"] = [*style["samples"], text][-10:]
@@ -126,7 +149,8 @@ class Store:
         return {**DEFAULT_SETTINGS, **self._read("settings.json", {})}
 
     def save_settings(self, d: dict) -> None:
-        self._write("settings.json", {**self.get_settings(), **d})
+        with self._lock:
+            self._write("settings.json", {**self.get_settings(), **d})
 
     # ------------------------------------------------------------- logic versions
     def import_logic(self, path: Path) -> Path:
@@ -157,9 +181,11 @@ class Store:
     def proposals(self) -> list[dict]:
         return self._read("proposals.json", [])
 
+    @_locked
     def save_proposals(self, items: list[dict]) -> None:
         self._write("proposals.json", items)
 
+    @_locked
     def set_proposal_status(self, pid: str, status: str) -> None:
         items = self.proposals()
         for x in items:

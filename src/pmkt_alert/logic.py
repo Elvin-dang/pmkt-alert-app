@@ -106,8 +106,11 @@ def load_logic(path: Path) -> Logic:
 def write_logic_version(logic: Logic, changes: dict[str, float | str], note: str, out_dir: Path) -> Path:
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    n = logic.version + 1
+    existing = [version_from_name(p.name) for p in out_dir.glob("*.xlsx")]
+    n = max([logic.version, *existing]) + 1  # never reuse a number, even after switching back to an old version
     out = out_dir / f"Alert_Logic_Ver {n}.xlsx"
+    if out.exists():
+        raise ValueError(f"{out.name} đã tồn tại")
     shutil.copyfile(logic.path, out)
     wb = openpyxl.load_workbook(out)
     params = {k: v for k, v in changes.items() if not k.startswith("matrix:")}
@@ -120,6 +123,8 @@ def write_logic_version(logic: Logic, changes: dict[str, float | str], note: str
             for row in wb["Matrix_PL"].iter_rows(min_row=5):
                 if row[0].value == mkey:
                     row[5].value = label or None
+    if "README_Flow" not in wb.sheetnames:
+        wb.create_sheet("README_Flow")
     wb["README_Flow"].append(["", f"Ver {n} – {date.today():%d/%m/%Y}", note])
     wb.save(out)
     return out

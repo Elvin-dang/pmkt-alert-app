@@ -121,10 +121,12 @@ async function doRun() {
   $("#run-btn").disabled = true;
   Object.keys(STEP_STATE).forEach((k) => delete STEP_STATE[k]);
   window.onProgress("load", "running", "");
+  if ($("#use-claude").checked) await checkClaude();
   const r = await api.run(S.paths, $("#as-of").value || null, $("#use-claude").checked);
   $("#run-btn").disabled = false;
   if (r.error) { $("#input-error").textContent = r.error; window.onProgress("load", "warn", r.error); return; }
   setRun(r);
+  if (r.ai && !r.ai.claude_ok) setPill("warn", "Lỗi ở lần chạy này", r.ai.error || "");
   go("results");
 }
 
@@ -174,8 +176,8 @@ function renderResults() {
     <div class="tabpanel ${tab === "t-data" ? "on" : ""}" id="t-data">${issues.length ? issues.map((i) => `<div class="todo"><span class="sev ${i.severity === "WARN" ? "MED" : "INFO"}">${i.severity === "WARN" ? "DATA" : "INFO"}</span><div><div class="t">${esc(i.title)}</div><div class="d">${esc(i.detail)}</div></div></div>`).join("") : '<div class="empty">Data ổn.</div>'}</div>`;
   S.origSlack = mine ? mine.slack : "";
 }
-function claudeMissing() {
-  const err = S.ai ? S.ai.error : "Lần chạy này không dùng Claude";
+function claudeMissing(mine) {
+  const err = !S.ai ? "Lần chạy này không dùng Claude" : (mine && mine.error) || S.ai.error;
   return `<div class="empty"><b>Claude không sẵn sàng</b><br>${esc(err || "")}<br>Kết quả rule vẫn đầy đủ ở tab Cảnh báo.</div>`;
 }
 function alertsTable() {
@@ -208,14 +210,14 @@ function alertsTable() {
     <th class="n">GMV %</th><th class="n">Spend %</th><th class="n">TACoS</th><th class="n">Δ Spend</th><th class="n">Excess $</th><th>Lý do</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
 function todosHtml(mine) {
-  if (!mine || (S.ai && S.ai.error && !mine.todos.length)) return claudeMissing();
+  if (!mine || (mine.error && !mine.todos.length)) return claudeMissing(mine);
   if (!mine.todos.length) return '<div class="empty">Không có to-do.</div>';
   return mine.todos.map((t) => `<div class="todo">${sev(t.severity)}<div><div class="t">${esc(t.title)}</div><div class="d">${esc(t.detail)}</div></div>
     <div class="r"><span class="muted">${t.due === "today" ? "Hôm nay" : "Trong tuần"}</span>${fbBtn((t.refs || [])[0] || "todo:" + t.title, "To-do: " + t.title)}</div></div>`).join("")
     + (mine.dropped ? `<p class="muted" style="font-size:12px">Đã bỏ ${mine.dropped} câu của Claude vì số liệu không khớp dữ liệu.</p>` : "");
 }
 function insightsHtml(mine) {
-  const list = !mine || (S.ai && S.ai.error && !mine.insights.length) ? claudeMissing()
+  const list = !mine || (mine.error && !mine.insights.length) ? claudeMissing(mine)
     : mine.insights.length ? mine.insights.map((i) => `<div class="insight"><span class="ai"><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Claude</span>
       <div>${esc(i.text)}</div><div class="src">Nguồn: ${esc((i.refs || []).join(", "))} ${fbBtn((i.refs || [])[0] || "insight", "Insight: " + i.text.slice(0, 60))}</div></div>`).join("")
     : '<div class="empty">Không có insight.</div>';
@@ -245,7 +247,7 @@ function openFb(unit, label) {
 function closeFb() { document.body.classList.remove("open"); }
 async function sendFb() {
   const issue = $$("#fb-issue button").filter((b) => b.getAttribute("aria-pressed") === "true").map((b) => b.textContent).join(", ");
-  const item = { unit_id: S.fb.unit, label: S.fb.label, issue, expected: $("#fbexp").value, text: $("#fbtxt").value };
+  const item = { unit_id: S.fb.unit, label: S.fb.label, issue, expected: $("#fbexp").value, text: $("#fbtxt").value, run_id: S.runId };
   closeFb();
   toast("Đang gửi góp ý cho Claude phân tích…");
   const r = await api.submit_feedback(item);
@@ -378,7 +380,7 @@ function wire() {
   });
   $("#pic").onchange = (e) => { S.pic = e.target.value; S.open.clear(); renderResults(); };
   $("#copy-slack").onclick = copySlack;
-  $("#export").onclick = async () => { if (!S.pic) return; const r = await api.export(S.pic); if (!bad(r) && r.path) toast("Đã xuất: " + r.path); };
+  $("#export").onclick = async () => { if (!S.pic) return; const r = await api.export(S.pic, null, S.runId); if (!bad(r) && r.path) toast("Đã xuất: " + r.path); };
   $("#results-body").addEventListener("click", (e) => {
     const fb = e.target.closest(".fb");
     if (fb) { e.stopPropagation(); openFb(fb.dataset.unit, fb.dataset.label); return; }

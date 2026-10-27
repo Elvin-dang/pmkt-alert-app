@@ -21,6 +21,9 @@ def empty_for(schema):
     return {"slack": "Chào PIC A"}
 
 
+OK = lambda: ClaudeStatus(True, "2.1", True, True, 1.0, None)
+
+
 def always_raise(exc):
     def f(*a, **k):
         raise exc
@@ -32,7 +35,7 @@ def paths(synthetic_paths):
 
 
 def test_run_without_claude(tmp_path, synthetic_paths):
-    api = Api(Store(tmp_path / "s"), ask_fn=always_raise(ClaudeError("không chạy")))
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("không chạy")))
     out = api.run(paths(synthetic_paths))
     assert "error" not in out and out["ai"]["claude_ok"] is False and out["result"]["digest"]
     assert out["result"]["inputs"]["activity"]["rows"] == 5
@@ -41,23 +44,23 @@ def test_run_without_claude(tmp_path, synthetic_paths):
 
 
 def test_run_rule_only(tmp_path, synthetic_paths):
-    out = Api(Store(tmp_path / "s"), ask_fn=always_raise(AssertionError("must not call"))).run(paths(synthetic_paths), use_claude=False)
+    out = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(AssertionError("must not call"))).run(paths(synthetic_paths), use_claude=False)
     assert out["ai"] is None and out["result"]["pl"]
 
 
 def test_bad_input_returns_error_not_raise(tmp_path):
-    out = Api(Store(tmp_path / "s")).run([str(tmp_path)])
+    out = Api(Store(tmp_path / "s"), status_fn=OK).run([str(tmp_path)])
     assert out["error"].startswith("Thiếu")
 
 
 def test_detect(tmp_path, synthetic_paths):
-    out = Api(Store(tmp_path / "s")).detect(paths(synthetic_paths))
+    out = Api(Store(tmp_path / "s"), status_fn=OK).detect(paths(synthetic_paths))
     assert set(out["roles"]) == {"tracker", "ads", "activity", "logic", "defind"}
     assert out["roles"]["logic"]["name"] == "Alert_Logic_Ver 1.xlsx"
 
 
 def test_feedback_roundtrip(tmp_path, synthetic_paths):
-    api = Api(Store(tmp_path / "s"), ask_fn=lambda p, s: empty_for(s))
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=lambda p, s: empty_for(s))
     run = api.run(paths(synthetic_paths))
     pl0 = run["result"]["pl"][0]
     out = api.submit_feedback({"unit_id": pl0["unit_id"], "issue": "Sai nhãn", "expected": "MAINTAIN", "text": "hết stock"})
@@ -67,7 +70,7 @@ def test_feedback_roundtrip(tmp_path, synthetic_paths):
 
 
 def test_feedback_claude_down_keeps_feedback(tmp_path, synthetic_paths):
-    api = Api(Store(tmp_path / "s"), ask_fn=always_raise(ClaudeError("down")))
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("down")))
     run = api.run(paths(synthetic_paths))
     out = api.submit_feedback({"unit_id": run["result"]["pl"][0]["unit_id"], "text": "x"})
     assert out["error"] and api.review()["feedback"][0]["status"] == "new"
@@ -75,7 +78,7 @@ def test_feedback_claude_down_keeps_feedback(tmp_path, synthetic_paths):
 
 def test_approve_and_apply_creates_ver2_and_reruns(tmp_path, synthetic_paths):
     finding = {"findings": [{"severity": "MED", "title": "t", "detail": "d", "kind": "param", "param_key": "camp_good", "proposed_value": 0.5}]}
-    api = Api(Store(tmp_path / "s"), ask_fn=lambda p, s: finding if "findings" in s["properties"] else empty_for(s))
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=lambda p, s: finding if "findings" in s["properties"] else empty_for(s))
     api.run(paths(synthetic_paths))
     prop = api.review()["proposals"][0]
     api.set_proposal(prop["id"], "approved")
@@ -85,7 +88,7 @@ def test_approve_and_apply_creates_ver2_and_reruns(tmp_path, synthetic_paths):
 
 
 def test_export(tmp_path, synthetic_paths):
-    api = Api(Store(tmp_path / "s"), ask_fn=always_raise(ClaudeError("x")))
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("x")))
     api.run(paths(synthetic_paths))
     out = api.export("PIC A", str(tmp_path / "a.xlsx"))
     assert sheet_names(Path(out["path"])) == ["Cảnh báo PL", "Cảnh báo Campaign", "To-do", "Insight", "Data"]
@@ -102,8 +105,7 @@ def test_check_update(tmp_path):
 
 
 def test_status_and_email_map(tmp_path, synthetic_paths):
-    api = Api(Store(tmp_path / "s"), ask_fn=always_raise(ClaudeError("x")),
-              status_fn=lambda: ClaudeStatus(True, "2.1", True, True, 1.0, None))
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("x")))
     assert api.claude_status()["level"] == "ok"
     api.run(paths(synthetic_paths))
     m = api.email_map_suggestions()["email_map"]
@@ -111,7 +113,7 @@ def test_status_and_email_map(tmp_path, synthetic_paths):
 
 
 def test_all_public_methods_never_raise(tmp_path):
-    api = Api(Store(tmp_path / "s"))
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
     for name in ["results", "review", "apply_proposals", "preview_style", "install_update"]:
         out = getattr(api, name)()
         assert isinstance(out, dict), name
@@ -119,4 +121,34 @@ def test_all_public_methods_never_raise(tmp_path):
 
 
 def test_pick_folder_without_window(tmp_path):
-    assert "error" in Api(Store(tmp_path)).pick_folder()
+    assert "error" in Api(Store(tmp_path), status_fn=OK).pick_folder()
+
+
+def test_claude_not_ready_skips_ai_stage(tmp_path, synthetic_paths):
+    bad = lambda: ClaudeStatus(True, "2.1", False, False, None, "Chưa đăng nhập Claude Code")
+    api = Api(Store(tmp_path / "s"), status_fn=bad, ask_fn=always_raise(AssertionError("must not call")))
+    out = api.run(paths(synthetic_paths))
+    assert out["ai"]["claude_ok"] is False and out["ai"]["error"] == "Chưa đăng nhập Claude Code"
+    assert out["ai"]["per_pic"]["PIC A"]["slack"].startswith("Chào PIC A")
+
+
+def test_ai_saved_even_if_proposals_fail(tmp_path, synthetic_paths, monkeypatch):
+    import pmkt_alert.api as api_mod
+    monkeypatch.setattr(api_mod, "proposals_from_review", always_raise(RuntimeError("backtest boom")))
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=lambda p, s: empty_for(s))
+    out = api.run(paths(synthetic_paths))
+    assert "error" not in out and out["ai"]["claude_ok"] is True
+    assert api.results(out["run_id"])["ai"]["claude_ok"] is True
+
+
+def test_export_and_feedback_use_viewed_run(tmp_path, synthetic_paths):
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=lambda p, s: empty_for(s))
+    old = api.run(paths(synthetic_paths), as_of="2026-10-12")
+    new = api.run(paths(synthetic_paths))
+    assert old["run_id"] != new["run_id"]
+    unit = old["result"]["pl"][0]["unit_id"]
+    api.submit_feedback({"unit_id": unit, "text": "x", "run_id": old["run_id"]})
+    fb = api.review()["feedback"][0]
+    assert fb["run_id"] == old["run_id"] and fb["row"]["unit_id"] == unit
+    out = api.export("PIC A", str(tmp_path / "a.xlsx"), old["run_id"])
+    assert out["run_id"] == old["run_id"]

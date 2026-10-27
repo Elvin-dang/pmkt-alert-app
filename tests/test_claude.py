@@ -5,6 +5,12 @@ import pytest
 
 from pmkt_alert.claude import ClaudeError, ask, check_status, filter_grounded, grounded, numbers_in
 from pmkt_alert.prompts import STYLE_SCHEMA
+import pmkt_alert.claude as claude_mod
+
+
+@pytest.fixture(autouse=True)
+def claude_on_path(monkeypatch):
+    monkeypatch.setattr(claude_mod.shutil, "which", lambda name: r"C:\npm\claude.cmd")
 
 
 def ok(out, code=0, err=""):
@@ -87,3 +93,34 @@ def test_filter_grounded():
              {"text": "tiêu $100", "refs": ["pl:missing"]}, {"text": "7 PL HIGH", "refs": []}]
     kept, dropped = filter_grounded(items, rows, ("text",), implicit=[{"pl_high": 7}])
     assert [k["text"] for k in kept] == ["tiêu $100", "7 PL HIGH"] and len(dropped) == 2
+
+
+def test_resolves_claude_cmd_via_which():
+    seen = []
+    run = lambda args, **kw: seen.append(args) or subprocess.CompletedProcess(args, 0, json.dumps({"result": '{"slack": "x"}'}), "")
+    ask("p", STYLE_SCHEMA, runner=run)
+    assert seen[0][0] == r"C:\npm\claude.cmd"
+
+
+def test_not_on_path_is_not_installed(monkeypatch):
+    monkeypatch.setattr(claude_mod.shutil, "which", lambda name: None)
+    s = check_status(runner=raise_(AssertionError("must not run")))
+    assert not s.installed and s.level == "bad"
+
+
+def test_decode_errors_replaced():
+    seen = {}
+    def run(args, **kw):
+        seen.update(kw)
+        return subprocess.CompletedProcess(args, 0, json.dumps({"result": '{"slack": "x"}'}), "")
+    ask("p", STYLE_SCHEMA, runner=run)
+    assert seen["errors"] == "replace"
+
+
+def test_retryable_flags():
+    with pytest.raises(ClaudeError) as e1:
+        ask("x", STYLE_SCHEMA, runner=fake({"-p": ok(json.dumps({"result": "prose"}))}))
+    assert e1.value.retryable is True
+    with pytest.raises(ClaudeError) as e2:
+        ask("x", STYLE_SCHEMA, runner=raise_(subprocess.TimeoutExpired("claude", 1)))
+    assert e2.value.retryable is False

@@ -2,6 +2,7 @@
 drops any sentence quoting a number the rules did not produce."""
 import json
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,11 @@ _AUTH = re.compile(r"login|log in|auth|api key|credential", re.IGNORECASE)
 
 
 class ClaudeError(Exception):
-    pass
+    """retryable=True only for malformed output; timeouts, auth and missing CLI are fatal."""
+
+    def __init__(self, msg: str, retryable: bool = False):
+        super().__init__(msg)
+        self.retryable = retryable
 
 
 @dataclass
@@ -38,16 +43,25 @@ class ClaudeStatus:
         return {**asdict(self), "level": self.level}
 
 
+def _exe() -> str | None:
+    # npm installs claude.cmd on Windows; which() honours PATHEXT, a bare "claude" would not.
+    return shutil.which("claude")
+
+
 def _run(runner, args: list[str], stdin: str | None, timeout: int):
-    kw = dict(input=stdin, capture_output=True, text=True, encoding="utf-8", timeout=timeout, cwd=tempfile.gettempdir())
+    kw = dict(input=stdin, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout,
+              cwd=tempfile.gettempdir())
     if sys.platform == "win32":
         kw["creationflags"] = subprocess.CREATE_NO_WINDOW
     return runner(args, **kw)
 
 
 def check_status(runner=subprocess.run) -> ClaudeStatus:
+    exe = _exe()
+    if not exe:
+        return ClaudeStatus(False, None, False, False, None, "Chưa cài Claude Code (không tìm thấy lệnh claude)")
     try:
-        v = _run(runner, ["claude", "--version"], None, 15)
+        v = _run(runner, [exe, "--version"], None, 15)
     except (FileNotFoundError, OSError):
         return ClaudeStatus(False, None, False, False, None, "Chưa cài Claude Code (không tìm thấy lệnh claude)")
     except subprocess.TimeoutExpired:
@@ -55,7 +69,7 @@ def check_status(runner=subprocess.run) -> ClaudeStatus:
     version = (v.stdout or "").strip().splitlines()[0] if (v.stdout or "").strip() else None
     t0 = time.monotonic()
     try:
-        p = _run(runner, ["claude", "-p", *ISOLATED], "Trả lời đúng một chữ: OK", 45)
+        p = _run(runner, [exe, "-p", *ISOLATED], "Trả lời đúng một chữ: OK", 45)
     except subprocess.TimeoutExpired:
         return ClaudeStatus(True, version, True, False, None, "Claude Code phản hồi quá chậm (>45s)")
     latency = round(time.monotonic() - t0, 1)
@@ -82,12 +96,15 @@ def _first_object(text: str) -> dict:
                     return obj
             except json.JSONDecodeError:
                 continue
-    raise ClaudeError("Claude không trả về JSON")
+    raise ClaudeError("Claude không trả về JSON", retryable=True)
 
 
 def ask(prompt: str, schema: dict, runner=subprocess.run, timeout: int = 240) -> dict:
+    exe = _exe()
+    if not exe:
+        raise ClaudeError("Chưa cài Claude Code")
     try:
-        p = _run(runner, ["claude", "-p", *ISOLATED], prompt, timeout)
+        p = _run(runner, [exe, "-p", *ISOLATED], prompt, timeout)
     except (FileNotFoundError, OSError):
         raise ClaudeError("Chưa cài Claude Code")
     except subprocess.TimeoutExpired:
@@ -102,7 +119,7 @@ def ask(prompt: str, schema: dict, runner=subprocess.run, timeout: int = 240) ->
     try:
         jsonschema.validate(obj, schema)
     except jsonschema.ValidationError as e:
-        raise ClaudeError(f"Kết quả Claude sai cấu trúc: {e.message[:120]}")
+        raise ClaudeError(f"Kết quả Claude sai cấu trúc: {e.message[:120]}", retryable=True)
     return obj
 
 

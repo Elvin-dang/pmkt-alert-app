@@ -42,3 +42,20 @@ def test_valid_change(tmp_path):
     assert valid_change("camp_cut", 1.25, lg) and not valid_change("camp_cut", "x", lg)
     assert valid_change("matrix:F|F|F", "REVIEW ADS", lg) and not valid_change("matrix:Z", "X", lg)
     assert not valid_change("nope", 1, lg)
+
+
+def test_new_version_never_overwrites(tmp_path):
+    src = make_logic(tmp_path / "Alert_Logic_Ver 1.xlsx")
+    out_dir = tmp_path / "out"
+    v2 = write_logic_version(load_logic(src), {"camp_cut": 1.5}, "a", out_dir)
+    v3 = write_logic_version(load_logic(src), {"camp_cut": 2.0}, "b", out_dir)  # from Ver 1 again
+    assert v2.name == "Alert_Logic_Ver 2.xlsx" and v3.name == "Alert_Logic_Ver 3.xlsx"
+    assert load_logic(v2).params["camp_cut"] == 1.5
+
+
+def test_missing_readme_sheet_created(tmp_path):
+    import openpyxl
+    src = make_logic(tmp_path / "Alert_Logic_Ver 1.xlsx")
+    wb = openpyxl.load_workbook(src); del wb["README_Flow"]; wb.save(src)
+    out = write_logic_version(load_logic(src), {"camp_cut": 1.2}, "n", tmp_path / "o")
+    assert "README_Flow" in openpyxl.load_workbook(out).sheetnames

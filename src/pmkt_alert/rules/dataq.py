@@ -15,8 +15,11 @@ class Issue:
 
 def data_check(*, unmapped_rows: int, unmapped_spend: float, ads_spend_mtd: float, raw_spend_mtd: float,
                unmatched_camps: pd.DataFrame, duplicates: int, no_pic_pls: list[str], log_skipped: int,
-               log_empty: bool) -> list[Issue]:
+               log_empty: bool, no_targets: bool = False) -> list[Issue]:
     out = []
+    if no_targets:
+        out.append(Issue("NO_TARGETS", "WARN", "KPI không có target cho tháng của as-of",
+                         "Mọi PL sẽ là NO PLAN. Kiểm tra sheet KPI (Month) hoặc chọn as-of khác.", None))
     if unmapped_rows:
         out.append(Issue("UNMAPPED", "WARN", f"{unmapped_rows} dòng ads_camp chưa map được Product Line",
                          f"${unmapped_spend:,.2f} spend MTD không được tính vào alert campaign.", unmapped_spend))

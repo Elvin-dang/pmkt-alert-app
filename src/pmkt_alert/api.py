@@ -7,7 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import __version__
-from .ai import generate, pic_rows
+from .ai import generate, offline, pic_rows
 from .aggregate import asin_map
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
 from .claude import ClaudeError, ask, check_status
@@ -118,7 +118,12 @@ class Api:
         run_id = self._store.save_run(rj, None)
         self._progress("rules", "done", f"{len(rj['pl'])} PL · {len(rj['camp'])} campaign")
         ai = None
-        if use_claude:
+        status = self._status() if use_claude else None
+        if use_claude and status.level != "ok":
+            ai = offline(rj, status.error or "Claude Code chưa sẵn sàng")
+            self._store.update_run_ai(run_id, ai)
+            self._progress("claude", "warn", ai["error"])
+        elif use_claude:
             self._progress("claude", "running", "Insight · To-do · Tin nhắn · Rà soát logic")
             amap = asin_map(inputs.products, result.as_of)
             l7d = Windows(result.as_of).l7d
@@ -126,8 +131,11 @@ class Api:
             inel = inel.merge(amap, on="asin")[["asin", "pl", "pic", "reason"]].drop_duplicates("asin")
             ai = generate(rj, logic, self._store, inputs.event_days, inputs.defind_text,
                           inel.to_dict("records"), ask_fn=self._ask)
-            proposals_from_review(ai["review"], logic, self._store, inputs, result.as_of)
             self._store.update_run_ai(run_id, ai)
+            try:
+                proposals_from_review(ai["review"], logic, self._store, inputs, result.as_of)
+            except Exception:  # a failed backtest must not hide the run
+                self._log(traceback.format_exc())
             self._progress("claude", "done" if ai["claude_ok"] else "warn", ai["error"] or "")
         return {"run_id": run_id, "result": rj, "ai": ai}
 
@@ -142,7 +150,9 @@ class Api:
     # ------------------------------------------------------------- feedback & review
     @safe
     def submit_feedback(self, item: dict) -> dict:
-        run = self._latest()
+        run = self._store.load_run(item["run_id"]) if item.get("run_id") else self._latest()
+        if not run:
+            raise ValueError("Không tìm thấy lần chạy")
         rows = {r["unit_id"]: r for r in run["result"]["pl"] + run["result"]["camp"]}
         row = rows.get(item.get("unit_id"), {})
         fid = self._store.add_feedback({**item, "run_id": run["run_id"],
@@ -261,12 +271,14 @@ class Api:
         return {"ok": True}
 
     @safe
-    def export(self, pic: str, path: str | None = None) -> dict:
-        run = self._latest()
+    def export(self, pic: str, path: str | None = None, run_id: str | None = None) -> dict:
+        run = self._store.load_run(run_id) if run_id else self._latest()
+        if not run:
+            raise ValueError("Không tìm thấy lần chạy")
         if path is None:
             import webview
             picked = self._window.create_file_dialog(webview.SAVE_DIALOG, save_filename=f"PMKT Alert - {pic}.xlsx")
             if not picked:
                 return {"cancelled": True}
             path = picked if isinstance(picked, str) else picked[0]
-        return {"path": str(export_pic(run["result"], run.get("ai"), pic, Path(path)))}
+        return {"path": str(export_pic(run["result"], run.get("ai"), pic, Path(path))), "run_id": run["run_id"]}

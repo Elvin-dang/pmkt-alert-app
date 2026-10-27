@@ -50,3 +50,17 @@ def test_digest_counts():
     d = digest(pl, camp).set_index("pic")
     assert d.loc["A"].tolist() == [1, 1, 1, 1, 1, 1, 15.0]
     assert d.loc["B"].tolist() == [0, 0, 0, 0, 1, 0, 1.0]
+
+
+def test_no_targets_for_month_warns():
+    issues = data_check(unmapped_rows=0, unmapped_spend=0.0, ads_spend_mtd=100.0, raw_spend_mtd=100.0,
+                        unmatched_camps=pd.DataFrame(columns=["campaign", "l7d_spend"]), duplicates=0, no_pic_pls=[],
+                        log_skipped=0, log_empty=False, no_targets=True)
+    assert [i.code for i in issues if i.severity == "WARN"] == ["NO_TARGETS"]
+
+
+def test_pipeline_flags_missing_month_targets(loaded, logic):
+    import dataclasses
+    no_oct = dataclasses.replace(loaded, kpi=loaded.kpi[loaded.kpi.month != 10])
+    r = run_rules(no_oct, logic, date(2026, 10, 19))
+    assert "NO_TARGETS" in {i.code for i in r.issues} and r.unreliable

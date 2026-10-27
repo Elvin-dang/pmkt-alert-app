@@ -23,7 +23,7 @@ def test_generate_survives_failures(result_json, logic, tmp_path):
         if _is(schema, "findings"):
             return {"findings": []}
         if '"PIC A"' in prompt:
-            raise ClaudeError("timeout")
+            raise ClaudeError("timeout", retryable=True)  # PIC A keeps failing; other PICs must still run
         return {"insights": [], "todos": [], "slack": "ok"}
     g = generate(result_json, logic, Store(tmp_path), {}, "", ask_fn=ask_fn)
     assert g["claude_ok"] is False and g["error"] == "timeout"
@@ -85,7 +85,34 @@ def test_retries_once_on_bad_output(result_json, logic, tmp_path):
         if '"PIC A"' in p:
             calls["n"] += 1
             if calls["n"] == 1:
-                raise ClaudeError("Kết quả Claude sai cấu trúc")
+                raise ClaudeError("Kết quả Claude sai cấu trúc", retryable=True)
         return {"insights": [], "todos": [], "slack": "ok"}
     g = generate(result_json, logic, Store(tmp_path), {}, "", ask_fn=ask_fn)
     assert calls["n"] == 2 and g["claude_ok"] is True and g["per_pic"]["PIC A"]["slack"] == "ok"
+
+
+def test_unexpected_exception_does_not_escape(result_json, logic, tmp_path):
+    def ask_fn(p, s):
+        if _is(s, "findings"):
+            raise RuntimeError("boom")
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")
+    g = generate(result_json, logic, Store(tmp_path), {}, "", ask_fn=ask_fn)
+    assert g["claude_ok"] is False and g["review"] == [] and g["per_pic"]["PIC A"]["slack"].startswith("Chào")
+
+
+def test_fatal_error_not_retried_and_stops_other_calls(result_json, logic, tmp_path):
+    prompts = []
+    def ask_fn(p, s):
+        prompts.append(p)
+        raise ClaudeError("Claude Code quá thời gian", retryable=False)
+    g = generate(result_json, logic, Store(tmp_path), {}, "", ask_fn=ask_fn)
+    assert len(prompts) == len(set(prompts))  # no retry on fatal errors
+    assert g["claude_ok"] is False
+
+
+def test_offline_result():
+    from pmkt_alert.ai import offline
+    out = offline({"as_of": "2026-10-19", "digest": [{"pic": "PIC A", "pl_high": 1, "pl_med": 0, "pl_trend_review": 0,
+                   "camp_high": 0, "camp_med": 0, "camp_followup": 0, "excess_new": 0.0}]}, "Chưa đăng nhập Claude Code")
+    assert out["claude_ok"] is False and out["error"] == "Chưa đăng nhập Claude Code"
+    assert out["per_pic"]["PIC A"]["slack"].startswith("Chào PIC A")

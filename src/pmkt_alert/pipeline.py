@@ -57,8 +57,8 @@ def run_rules(inputs, logic: Logic, as_of: date | None = None) -> RunResult:
         ads_spend_mtd=float(ads_mtd["spend"].sum()), raw_spend_mtd=float(_between(inputs.raw, win.mtd)["spend"].sum()),
         unmatched_camps=unmatched, duplicates=amap.attrs.get("duplicates", 0),
         no_pic_pls=sorted(pl.loc[pl["pic"] == NO_PIC, "pl"]), log_skipped=actions.attrs.get("skipped", 0),
-        log_empty=len(inputs.activity) == 0)
-    unreliable = any(i.severity == "WARN" and i.code in ("UNMAPPED", "SPEND_GAP") for i in issues)
+        log_empty=len(inputs.activity) == 0, no_targets=not (inputs.kpi["month"] == win.as_of.month).any())
+    unreliable = any(i.severity == "WARN" and i.code in ("UNMAPPED", "SPEND_GAP", "NO_TARGETS") for i in issues)
     return RunResult(win.as_of, logic.version, pl, camp, digest(pl, camp), issues, unreliable)
 
 

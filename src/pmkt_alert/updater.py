@@ -90,15 +90,31 @@ def download_verified(rel: Release, dest_dir: Path, fetch=urllib.request.urlopen
 
 
 def swap_script(new_exe: Path, current_exe: Path, pid: int) -> str:
+    """Batch file (UTF-8, chcp 65001 for non-ASCII profile paths). Waits for the app to exit, retries the
+    move while the exe is still locked, and always relaunches – the old exe if the swap fails."""
+    pause = "ping -n 2 127.0.0.1 >nul"  # `timeout` fails without a console
     return "\r\n".join([
         "@echo off",
+        "chcp 65001 >nul",
         ":wait",
         f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul',
-        "if not errorlevel 1 (timeout /t 1 /nobreak >nul & goto wait)",
-        f'move /y "{new_exe}" "{current_exe}"',
-        "if errorlevel 1 exit /b 1",
+        f"if not errorlevel 1 ({pause} & goto wait)",
+        "set /a tries=0",
+        ":move",
+        f'move /y "{new_exe}" "{current_exe}" >nul',
+        "if not errorlevel 1 goto ok",
+        "set /a tries+=1",
+        "if %tries% geq 30 goto fail",
+        pause,
+        "goto move",
+        ":ok",
         f'start "" "{current_exe}"',
         'del "%~f0"',
+        "exit /b 0",
+        ":fail",
+        f'start "" "{current_exe}"',
+        'del "%~f0"',
+        "exit /b 1",
     ])
 
 
@@ -106,6 +122,8 @@ def apply_update(new_exe: Path) -> None:
     if not getattr(sys, "frozen", False) or sys.platform != "win32":
         raise RuntimeError("Chỉ cập nhật được bản .exe trên Windows")
     script = Path(tempfile.gettempdir()) / "pmkt-alert-update.bat"
-    script.write_text(swap_script(Path(new_exe), Path(sys.executable), os.getpid()), encoding="utf-8")
+    # One-file builds run as a child of the bootloader, which holds the exe until it exits: wait for the parent.
+    pid = os.getppid() if hasattr(sys, "_MEIPASS") else os.getpid()
+    script.write_text(swap_script(Path(new_exe), Path(sys.executable), pid), encoding="utf-8")
     subprocess.Popen(["cmd", "/c", str(script)], close_fds=True,
                      creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)

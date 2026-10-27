@@ -20,6 +20,11 @@ jobs:
         env:
           APP_NAME: PMKT-Alert-${{ github.ref_name }}
         run: pyinstaller --noconfirm pmkt_alert.spec
+      - name: Self-check built exe
+        run: |
+          $exe = (Get-ChildItem dist\*.exe).FullName
+          $p = Start-Process -FilePath $exe -ArgumentList "--selfcheck" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "selfcheck failed: UI not bundled" }
       - name: Checksum
         run: python -c "import hashlib,pathlib; p=next(pathlib.Path('dist').glob('*.exe')); pathlib.Path(str(p)+'.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n')"
       - name: Release

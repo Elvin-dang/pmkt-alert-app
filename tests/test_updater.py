@@ -72,3 +72,12 @@ def test_swap_script_keeps_old_on_failure():
     s = swap_script(Path(r"C:\t\new.exe"), Path(r"C:\a\PMKT-Alert.exe"), 1234)
     assert 'PID eq 1234' in s and 'move /y "C:\\t\\new.exe" "C:\\a\\PMKT-Alert.exe"' in s and "exit /b 1" in s
     assert s.index("move /y") < s.index('start ""')
+
+
+def test_swap_script_robust():
+    s = swap_script(Path(r"C:\Users\Hà\new.exe"), Path(r"C:\a\PMKT-Alert.exe"), 1234)
+    assert s.startswith("@echo off\r\nchcp 65001")
+    assert "timeout" not in s and "ping -n 2 127.0.0.1" in s
+    assert "set /a tries" in s
+    fail = s.index(":fail")
+    assert 'start "" "C:\\a\\PMKT-Alert.exe"' in s[fail:]  # old app relaunched if the swap fails

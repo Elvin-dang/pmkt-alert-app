@@ -76,6 +76,8 @@ def detect_inputs(paths: list[Path]) -> dict[str, Path]:
             continue
         if role:
             found.setdefault(role, []).append(f)
+    if len(found.get("activity", [])) > 1:  # daily exports pile up in Downloads: use the newest
+        found["activity"] = [max(found["activity"], key=lambda f: f.stat().st_mtime)]
     for role in ROLES:
         if role not in found:
             raise InputError(f"Thiếu {ROLE_HINT[role]}")
@@ -170,6 +172,8 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
               "spend_usd", "clicks", "sales_14d", "order_14d"], "ads_camp")
     names = a["account_name"].astype(str).str.strip()
     accounts = names.value_counts()
+    if account and account not in accounts.index:
+        raise InputError(f"ads_camp không có account '{account}' – chọn lại trong Cài đặt → Tài khoản Ads")
     chosen = account or (accounts.index[0] if len(accounts) else "")
     a = a[names == chosen]
     ads = pd.DataFrame({

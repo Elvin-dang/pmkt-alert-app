@@ -63,3 +63,17 @@ def test_ads_account_defaults_to_most_rows_and_can_be_set(synthetic_dir):
     assert load_inputs(roles).ads.attrs["account"] == "Main Account"
     other = load_inputs(roles, account="Other Brand")
     assert len(other.ads) == 1 and other.ads.attrs["account"] == "Other Brand"
+
+
+def test_unknown_account_is_input_error(synthetic_dir):
+    with pytest.raises(InputError, match="Nope"):
+        load_inputs(detect_inputs([synthetic_dir]), account="Nope")
+
+
+def test_newest_activity_log_wins(tmp_path):
+    import os, time
+    files = make_all(tmp_path)
+    old = tmp_path / "Activity Log_old.xlsx"
+    shutil.copy(files["activity"], old)
+    os.utime(old, (time.time() - 3600, time.time() - 3600))
+    assert detect_inputs([tmp_path])["activity"].name == "activity.xlsx"

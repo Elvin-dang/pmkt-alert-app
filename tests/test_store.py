@@ -60,3 +60,12 @@ def test_default_base_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setenv("APPDATA", r"C:\Users\x\AppData\Roaming")
     assert str(default_base()).endswith("PMKT Alert")
+
+
+def test_concurrent_settings_writes_keep_all_keys(tmp_path):
+    import threading
+    s = Store(tmp_path)
+    threads = [threading.Thread(target=s.save_settings, args=({f"k{i}": i},)) for i in range(30)]
+    [t.start() for t in threads]; [t.join() for t in threads]
+    got = s.get_settings()
+    assert all(got[f"k{i}"] == i for i in range(30)) and not list(tmp_path.glob("*.corrupt-*"))
