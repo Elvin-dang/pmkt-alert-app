@@ -190,3 +190,10 @@ def test_vietnamese_number_formats_and_dash_dates():
     assert grounded("excess 527.64 và GMV 187,268", rows)
     assert not grounded("GMV MTD 999.999", rows)
     assert not grounded("TACoS 12,5%", rows)
+
+
+def test_numbers_inside_names_and_units_are_ignored():
+    rows = [{"campaign": "Camp SB PT 18lbs & 35lbs", "pl": "Roller Foam - Single 20 lbs", "excess": 61.27}]
+    assert grounded("2 camp SB PT 18lbs & 35lbs: excess $61.27", rows)
+    assert grounded("PL Roller Foam - Single 20 lbs đang overspend", rows)
+    assert not grounded("excess $61.99", rows)

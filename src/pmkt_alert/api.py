@@ -161,13 +161,15 @@ class Api:
             self._store.update_run_ai(run_id, ai)
             self._progress("claude", "warn", ai["error"])
         elif use_claude:
-            self._progress("claude", "running", "Insight · To-do · Tin nhắn · Rà soát logic")
+            careful = bool(self._store.get_settings().get("careful_mode", True))
+            self._progress("claude", "running", "5 bước/PIC: dữ kiện → nháp → kiểm tra → biên tập → kiểm tra lại"
+                           if careful else "Chế độ nhanh: nháp → kiểm tra")
             amap = asin_map(inputs.products, result.as_of)
             l7d = Windows(result.as_of).l7d
             inel = inputs.ineligible[(inputs.ineligible["date"] >= l7d[0]) & (inputs.ineligible["date"] <= l7d[1])]
             inel = inel.merge(amap, on="asin")[["asin", "pl", "pic", "reason"]].drop_duplicates("asin")
             ai = generate(rj, logic, self._store, inputs.event_days, inputs.defind_text,
-                          inel.to_dict("records"), ask_fn=self._ask)
+                          inel.to_dict("records"), ask_fn=self._ask, careful=careful)
             self._store.update_run_ai(run_id, ai)
             try:
                 proposals_from_review(ai["review"], logic, self._store, inputs, result.as_of)

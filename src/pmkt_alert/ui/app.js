@@ -582,6 +582,7 @@ function wire() {
   };
   $("#repo").onchange = async (e) => { if (!bad(await api.save_settings({ github_repo: e.target.value.trim() }))) checkUpdate(false); };
   $("#auto-upd").onchange = (e) => api.save_settings({ auto_update_check: e.target.checked });
+  $("#careful").onchange = (e) => api.save_settings({ careful_mode: e.target.checked });
   $("#ads-account").onchange = async (e) => { if (!bad(await api.save_settings({ ads_account: e.target.value }))) toast("Đã lưu – chạy lại để áp dụng."); };
   $("#upd-check").onclick = () => checkUpdate(true);
   $("#upd-whatsnew").onclick = $("#upd-whatsnew2").onclick = $("#f-version").onclick = openWn;
@@ -606,6 +607,7 @@ async function init() {
   const settings = await api.get_settings();
   if (!settings.error) {
     if ((settings.last_inputs || {}).paths) useInputs(settings.last_inputs.paths);
+    $("#careful").checked = settings.careful_mode !== false;
     if (settings.auto_update_check) checkUpdate(false);
     else api.check_update().then((u) => { if (!u.error) { S.update = u; renderVersion(); } });
   }

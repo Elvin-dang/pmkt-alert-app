@@ -199,6 +199,8 @@ def number_tokens(text: str) -> list[list[tuple[float, bool, int]]]:
         if first > 0 and clean[first - 1].isalpha():
             continue
         suffix = (suffix or "").lower()
+        if not suffix and m.end(2) < len(clean) and clean[m.end(2)].isalpha():
+            continue  # glued to a unit / name part: "18lbs", "2pcs"
         readings = []
         for value, decimals in _readings(raw):
             if suffix == "k":
@@ -227,6 +229,10 @@ def _values(rows: list[dict]) -> list[float]:
 
 def grounded(text: str, rows: list[dict]) -> bool:
     vals = _values(rows)
+    # Names (PL / campaign) may contain numbers ("… 20 lbs"); they are quoted, not computed.
+    for name in sorted({v for r in rows for v in r.values() if isinstance(v, str) and len(v) >= 4 and any(c.isdigit() for c in v)},
+                       key=len, reverse=True):
+        text = re.sub(re.escape(name), " ", text, flags=re.IGNORECASE)
 
     def matches(value, is_pct, dec):
         tol = 0.5 * 10 ** (-dec) + 1e-9

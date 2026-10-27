@@ -1,11 +1,18 @@
-"""Per-run Claude orchestration: one call per PIC (insights, to-dos, Slack) plus one logic review.
-Any failure leaves the rule results intact; ungrounded text is dropped."""
+"""Per-run Claude orchestration, per PIC:
+1. facts – rule rows + comparisons (previous run, team average)    [code]
+2. draft – insights, to-dos, message                               [Claude]
+3. check – numbers grounded, refs exist, advice agrees with the rule label   [code]
+4. critic – rewrite for clarity: no contradictions, duplicates, jargon        [Claude, careful mode]
+5. check again – anything failing falls back to the checked draft             [code]
+Plus one logic review. Any failure leaves the rule results intact."""
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 from .claude import ClaudeError, ask, filter_grounded, grounded
 from .logic import Logic, valid_change
-from .prompts import CAMP_FIELDS, INSIGHTS_SCHEMA, PL_FIELDS, REVIEW_SCHEMA, insights_prompt, review_prompt
+from .prompts import (CAMP_FIELDS, INSIGHTS_SCHEMA, PL_FIELDS, REVIEW_SCHEMA, critic_prompt, insights_prompt,
+                      review_prompt)
+from .scorecard import scorecard
 from .store import Store
 from .windows import Windows
 
@@ -31,6 +38,76 @@ def pic_rows(result_json: dict, pic: str) -> dict:
             "all": {r["unit_id"]: r for r in pl + camp}}
 
 
+# Advice that contradicts the rule's direction for the row it cites is dropped.
+_DOWN = ("SCALE DOWN", "OPTIMIZE", "CUT", "PAUSE")
+_UP = ("SCALE UP", "MAINTAIN/PUSH")
+_FORBID = {
+    "down": ("tăng bid", "tăng budget", "scale up", "đẩy mạnh", "đẩy thêm", "push", "mở rộng budget"),
+    "up": ("scale down", "cắt", "pause", "tắt", "giảm bid", "giảm budget", "negate"),
+}
+
+
+def _direction(row: dict) -> str | None:
+    action = str(row.get("base_action") or row.get("pacing_action") or "")
+    if action.startswith(_DOWN):
+        return "down"
+    if action.startswith(_UP):
+        return "up"
+    return None
+
+
+_NEGATION = ("đừng", "không", "chưa", "tránh", "ngừng", "dừng", "thay vì", "không nên")
+
+
+def consistent(text: str, rows: list[dict]) -> bool:
+    dirs = {_direction(r) for r in rows}
+    if len(dirs) != 1 or None in dirs:
+        return True  # no single direction to judge against
+    low = text.lower()
+    for w in _FORBID[dirs.pop()]:
+        start = low.find(w)
+        while start != -1:
+            if not any(n in low[max(0, start - 12):start] for n in _NEGATION):  # "đừng tăng bid" is fine
+                return False
+            start = low.find(w, start + 1)
+    return True
+
+
+def _verify(out: dict, rows_all: dict, implicit: list[dict]) -> dict:
+    """Step 3/5: keep only items whose numbers are grounded, refs exist and advice agrees with the rule."""
+    ins, ins_drop = filter_grounded(out.get("insights", []), rows_all, ("text",), implicit)
+    todos, todo_drop = filter_grounded(out.get("todos", []), rows_all, ("title", "detail"), implicit)
+    agree = lambda it, keys: consistent(" ".join(str(it.get(k, "")) for k in keys), [rows_all[r] for r in it.get("refs", [])])  # noqa: E731
+    ins_ok = [i for i in ins if agree(i, ("text",))]
+    todos_ok = [t for t in todos if agree(t, ("title", "detail"))]
+    slack = out.get("slack") or ""
+    slack_ok = bool(slack) and grounded(slack, list(rows_all.values()) + implicit)
+    return {"insights": ins_ok, "todos": todos_ok, "slack": slack if slack_ok else "",
+            "dropped": len(ins_drop) + len(todo_drop) + len(ins) - len(ins_ok) + len(todos) - len(todos_ok)
+            + (0 if slack_ok or not slack else 1),
+            "all_ok": not ins_drop and not todo_drop and len(ins_ok) == len(ins) and len(todos_ok) == len(todos)}
+
+
+def _comparisons(result_json: dict, store: Store) -> dict:
+    """Step 1 context: the PIC's previous run and the team average, so Claude can say 'better/worse than'."""
+    prev = None
+    for r in store.list_runs():
+        if r["as_of"] and r["as_of"] < result_json["as_of"]:
+            prev = store.load_run(r["run_id"]).get("result")
+            break
+    sc = scorecard(result_json)
+    keys = ("gmv_pace", "tacos_ratio", "acos_l7d", "excess_share")
+    ranked = [p for p in sc["pics"] if p["rank"]]
+    avg = {k: round(sum(p["values"][k] for p in ranked if p["values"][k] is not None)
+                    / max(1, sum(1 for p in ranked if p["values"][k] is not None)), 4) for k in keys}
+    out = {}
+    for p in sc["pics"]:
+        prev_d = next((d for d in (prev or {}).get("digest", []) if d["pic"] == p["pic"]), None)
+        out[p["pic"]] = {"previous": {"as_of": prev["as_of"], "digest": prev_d} if prev_d else None, "team_avg": avg,
+                         "this_pic": {k: p["values"][k] for k in keys}}
+    return out
+
+
 def _ask_twice(ask_fn, prompt: str, schema: dict) -> dict:
     try:
         return ask_fn(prompt, schema)
@@ -48,8 +125,9 @@ def offline(result_json: dict, reason: str) -> dict:
 
 
 def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, defind_text: str,
-             ineligible: list[dict] | None = None, ask_fn=ask) -> dict:
+             ineligible: list[dict] | None = None, ask_fn=ask, careful: bool = True) -> dict:
     lessons = [x["text"] for x in store.lessons()]
+    compare = _comparisons(result_json, store)
     style = store.get_style()
     context = {"time_gone": Windows(date.fromisoformat(result_json["as_of"])).time_gone}
     errors: list[str] = []
@@ -75,18 +153,26 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
         if not any(d[k] for k in ("pl_high", "pl_med", "pl_trend_review", "camp_high", "camp_med", "camp_followup")):
             return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0}
         inel = [x for x in (ineligible or []) if x.get("pic") == pic]
-        prompt = insights_prompt(pic, rows, d, logic, lessons, style, defind_text, inel)
+        implicit = implicit + [v for c in compare.get(pic, {}).values() if isinstance(c, dict) for v in
+                                ([c.get("digest")] if "digest" in c else [c]) if v]
+        prompt = insights_prompt(pic, rows, d, logic, lessons, style, defind_text, inel, compare.get(pic))
         try:
-            out = call(prompt, INSIGHTS_SCHEMA)
+            draft = _verify(call(prompt, INSIGHTS_SCHEMA), rows["all"], implicit)
         except ClaudeError as e:
             errors.append(str(e))
-            return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0, "error": str(e)}
-        out.setdefault("slack", "")
-        ins, ins_drop = filter_grounded(out["insights"], rows["all"], ("text",), implicit)
-        todos, todo_drop = filter_grounded(out["todos"], rows["all"], ("title", "detail"), implicit)
-        slack_ok = grounded(out["slack"], list(rows["all"].values()) + implicit)
-        return pic, {"insights": ins, "todos": todos, "slack": out["slack"] if slack_ok and out["slack"] else fallback,
-                     "dropped": len(ins_drop) + len(todo_drop) + (0 if slack_ok else 1)}
+            return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0, "error": str(e), "steps": 1}
+        final, steps = draft, 3
+        if careful:
+            try:
+                critic = _verify(call(critic_prompt(pic, draft, rows, d, style, lessons), INSIGHTS_SCHEMA), rows["all"], implicit)
+                steps = 5
+                final = {"insights": critic["insights"] if critic["all_ok"] or not draft["insights"] else draft["insights"],
+                         "todos": critic["todos"] if critic["all_ok"] or not draft["todos"] else draft["todos"],
+                         "slack": critic["slack"] or draft["slack"], "dropped": draft["dropped"] + critic["dropped"]}
+            except ClaudeError:
+                pass  # the checked draft stands
+        return pic, {"insights": final["insights"], "todos": final["todos"], "slack": final["slack"] or fallback,
+                     "dropped": final["dropped"], "steps": steps}
 
     def review() -> list[dict]:
         try:

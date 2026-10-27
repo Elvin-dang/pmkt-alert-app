@@ -14,7 +14,7 @@ from .logic import version_from_name
 DEFAULT_STYLE = {"language": "vi_en_terms", "pronoun": "em_anhchi", "length": "short", "tone": "friendly_direct",
                  "emoji": "low", "samples": [], "rules": "", "pic_address": {}}
 DEFAULT_SETTINGS = {"auto_update_check": True, "email_map": {}, "last_inputs": {}, "active_logic": None,
-                    "github_repo": "", "ads_account": ""}
+                    "github_repo": "", "ads_account": "", "careful_mode": True}
 
 
 def default_base() -> Path:

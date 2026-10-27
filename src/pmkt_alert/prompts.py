@@ -101,8 +101,19 @@ def params_text(logic: Logic) -> str:
     return "\n".join(lines)
 
 
+def _compare_text(compare: dict | None) -> str:
+    if not compare:
+        return "(không có)"
+    lines = []
+    if compare.get("previous"):
+        lines.append(f"Lần chạy trước ({compare['previous']['as_of']}): {_j(compare['previous']['digest'])}")
+    lines.append(f"Trung bình đội: {_j(compare['team_avg'])}")
+    lines.append(f"PIC này: {_j(compare['this_pic'])}")
+    return "\n".join(lines)
+
+
 def insights_prompt(pic: str, rows: dict, digest_row: dict, logic: Logic, lessons: list[str], style: dict,
-                    defind_text: str, ineligible: list[dict]) -> str:
+                    defind_text: str, ineligible: list[dict], compare: dict | None = None) -> str:
     return f"""Bạn là chuyên gia Performance Marketing Amazon, viết báo cáo hằng ngày cho PIC "{pic}".
 Dữ liệu dưới đây đã được hệ thống rule tính sẵn (Alert_Logic Ver {logic.version}).
 
@@ -123,10 +134,13 @@ Tổng quan PIC (digest): {_j(digest_row)}
 Product Line cần chú ý: {_j(rows['pl'])}
 Campaign cần chú ý: {_j(rows['camp'])}
 ASIN đang INELIGIBLE (L7D): {_j(ineligible)}
+Bối cảnh so sánh (dùng để nói tốt hơn/xấu đi; gmv_pace, tacos_ratio là tỉ lệ):
+{_compare_text(compare)}
 
 Hãy viết:
 - insights: 2–5 nhận định "vì sao" (nguyên nhân, bối cảnh), mỗi cái 1–2 câu.
 - todos: tối đa 8 việc cụ thể, ưu tiên HIGH và excess spend lớn; due = "today" cho HIGH, "week" cho MED.
+  Mỗi to-do = LÀM GÌ + VÌ SAO (một con số) + Ở ĐÂU (tên PL/campaign). Không trái với nhãn rule của dòng đó.
 - slack: một tin nhắn Slack gửi PIC theo văn phong trên, tóm tắt việc HIGH hôm nay và tổng excess spend.
 
 Schema: {_j(INSIGHTS_SCHEMA)}"""
@@ -236,3 +250,26 @@ Schema: {_j(TEAM_SCHEMA)}"""
 
 
 NO_PIC_LABEL = "Chưa có PIC"
+
+
+def critic_prompt(pic: str, draft: dict, rows: dict, digest_row: dict, style: dict, lessons: list[str]) -> str:
+    return f"""BIÊN TẬP báo cáo cho PIC "{pic}". Đây là bản nháp đã qua kiểm tra số liệu. Hãy biên tập lại để người đọc
+không bị rối, rồi trả về đúng cấu trúc như bản nháp.
+
+{_RULES}
+- Giữ nguyên các con số và refs của bản nháp; không thêm số mới.
+- Bỏ câu trùng ý, mâu thuẫn hoặc trái với nhãn rule (VD: khuyên tăng bid cho dòng đang SCALE DOWN/CUT).
+- Mỗi to-do = LÀM GÌ + VÌ SAO (một con số) + Ở ĐÂU (tên PL/campaign); sắp HIGH trước, excess lớn trước; tối đa 8.
+- Câu ngắn, rõ; giải thích thuật ngữ khó bằng lời thường (L3D = 3 ngày gần nhất…).
+- Tin nhắn ngắn gọn, đúng văn phong và xưng hô dưới đây.
+
+{style_text(style, pic)}
+
+Bài học đã được duyệt:
+{chr(10).join('- ' + x for x in lessons) or '- (chưa có)'}
+
+Tổng quan PIC: {_j(digest_row)}
+Dữ liệu để đối chiếu: {_j({"pl": rows["pl"], "camp": rows["camp"]})}
+Bản nháp: {_j({k: draft.get(k) for k in ("insights", "todos", "slack")})}
+
+Schema: {_j(INSIGHTS_SCHEMA)}"""

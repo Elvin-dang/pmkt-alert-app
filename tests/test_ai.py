@@ -37,7 +37,7 @@ def test_ungrounded_items_dropped(result_json, logic, tmp_path):
     bad = {"insights": [{"text": "lỗ $123,456", "refs": [camp_id]}],
            "todos": [{"title": "Cắt", "detail": "dư chi $999,999", "severity": "HIGH", "due": "today", "refs": [camp_id]}],
            "slack": "tiêu $888,888"}
-    g = generate(result_json, logic, Store(tmp_path), {}, "",
+    g = generate(result_json, logic, Store(tmp_path), {}, "", careful=False,
                  ask_fn=lambda p, s: {"findings": []} if _is(s, "findings") else bad)
     a = g["per_pic"]["PIC A"]
     assert a["todos"] == [] and a["insights"] == [] and a["dropped"] == 3
@@ -87,7 +87,7 @@ def test_retries_once_on_bad_output(result_json, logic, tmp_path):
             if calls["n"] == 1:
                 raise ClaudeError("Kết quả Claude sai cấu trúc", retryable=True)
         return {"insights": [], "todos": [], "slack": "ok"}
-    g = generate(result_json, logic, Store(tmp_path), {}, "", ask_fn=ask_fn)
+    g = generate(result_json, logic, Store(tmp_path), {}, "", ask_fn=ask_fn, careful=False)
     assert calls["n"] == 2 and g["claude_ok"] is True and g["per_pic"]["PIC A"]["slack"] == "ok"
 
 

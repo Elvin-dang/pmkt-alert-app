@@ -289,3 +289,19 @@ def test_team_review_drops_made_up_numbers(tmp_path, synthetic_paths):
     run = api.run(paths(synthetic_paths))
     out = api.team_review(run["run_id"])
     assert out["summary"] == "" and out["dropped"] == 1
+
+
+def test_careful_mode_setting_controls_critic(tmp_path, synthetic_paths):
+    calls = []
+    def ask_fn(p, s):
+        calls.append("critic" if "BIÊN TẬP" in p else "other")
+        return empty_for(s)
+    st = Store(tmp_path / "s")
+    assert st.get_settings()["careful_mode"] is True
+    api = Api(st, status_fn=OK, ask_fn=ask_fn)
+    api.run(paths(synthetic_paths))
+    assert "critic" in calls
+    calls.clear()
+    st.save_settings({"careful_mode": False})
+    api.run(paths(synthetic_paths))
+    assert "critic" not in calls and calls
