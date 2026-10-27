@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 import jsonschema
 
@@ -40,12 +41,52 @@ class ClaudeStatus:
         return "ok" if self.responds else "warn"
 
     def to_dict(self) -> dict:
-        return {**asdict(self), "level": self.level}
+        # "error" is reserved for failed Api calls in the UI, so the reason travels as "detail".
+        d = asdict(self)
+        d["detail"] = d.pop("error")
+        return {**d, "level": self.level}
 
 
 def _exe() -> str | None:
     # npm installs claude.cmd on Windows; which() honours PATHEXT, a bare "claude" would not.
-    return shutil.which("claude")
+    # Right after an in-app install the native installer's bin dir is not on this process's PATH yet.
+    found = shutil.which("claude")
+    if found:
+        return found
+    name = "claude.exe" if sys.platform == "win32" else "claude"
+    native = Path.home() / ".local" / "bin" / name
+    return str(native) if native.exists() else None
+
+
+def install_command() -> list[str]:
+    """Official native installers (code.claude.com/docs/en/setup); no admin rights needed."""
+    if sys.platform == "win32":
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                "irm https://claude.ai/install.ps1 | iex"]
+    return ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"]
+
+
+def install(runner=subprocess.run) -> dict:
+    try:
+        p = _run(runner, install_command(), None, 600)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "output": f"Cài đặt không chạy được: {e}"}
+    output = ((p.stdout or "") + "\n" + (p.stderr or "")).strip()[-2000:]
+    return {"ok": p.returncode == 0 and _exe() is not None, "output": output}
+
+
+def login_command(exe: str) -> list[str]:
+    """Open a terminal running `claude`, where the user logs in through the browser."""
+    if sys.platform == "win32":
+        return ["cmd", "/c", "start", "Claude Code", "cmd", "/k", exe]
+    if sys.platform == "darwin":
+        return ["osascript", "-e", f'tell application "Terminal" to do script "\\"{exe}\\""',
+                "-e", 'tell application "Terminal" to activate']
+    return ["x-terminal-emulator", "-e", exe]
+
+
+def open_login(exe: str) -> None:
+    subprocess.Popen(login_command(exe), close_fds=True)
 
 
 def _run(runner, args: list[str], stdin: str | None, timeout: int):

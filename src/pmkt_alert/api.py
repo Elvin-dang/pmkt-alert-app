@@ -10,7 +10,9 @@ from . import __version__
 from .ai import generate, offline, pic_rows
 from .aggregate import asin_map
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
-from .claude import ClaudeError, ask, check_status
+from .claude import ClaudeError, ask, check_status, open_login
+from .claude import _exe as claude_exe
+from .claude import install as install_claude_cli
 from .export import export_pic
 from .loaders import ROLES, InputError, detect_inputs, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
@@ -179,6 +181,19 @@ class Api:
     @safe
     def claude_status(self) -> dict:
         return self._status().to_dict()
+
+    @safe
+    def install_claude(self) -> dict:
+        out = install_claude_cli()
+        return {**out, "status": self._status().to_dict()}
+
+    @safe
+    def open_claude_login(self) -> dict:
+        exe = claude_exe()
+        if not exe:
+            raise RuntimeError("Chưa cài Claude Code")
+        open_login(exe)
+        return {"ok": True}
 
     # ------------------------------------------------------------- feedback & review
     @safe

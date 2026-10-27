@@ -73,12 +73,37 @@ async function checkClaude() {
   const s = await api.claude_status();
   if (bad(s)) return;
   const text = s.level === "ok" ? "Sẵn sàng" : !s.installed ? "Chưa cài" : !s.logged_in ? "Chưa đăng nhập" : "Chậm/không ổn định";
-  setPill(s.level, text, [s.version, s.latency_s != null ? `phản hồi ${s.latency_s}s` : "", s.error].filter(Boolean).join(" · "));
+  setPill(s.level, text + (!s.installed ? " – bấm để cài" : !s.logged_in ? " – bấm để đăng nhập" : ""), [s.version, s.latency_s != null ? `phản hồi ${s.latency_s}s` : "", s.detail].filter(Boolean).join(" · "));
   $("#cc-checks").innerHTML = [
-    [s.installed, "Đã cài đặt", s.version ? `<code class="muted">${esc(s.version)}</code>` : "Cài Claude Code rồi mở lại app"],
-    [s.logged_in, "Đã đăng nhập", s.logged_in ? "" : "Mở terminal, chạy <code>claude</code> rồi đăng nhập"],
-    [s.responds, "Phản hồi thử", s.latency_s != null ? `<span class="muted num">${s.latency_s}s</span>` : esc(s.error || "")],
+    [s.installed, "Đã cài đặt", s.version ? `<code class="muted">${esc(s.version)}</code>` : "Bấm “Cài Claude Code” bên dưới"],
+    [s.logged_in, "Đã đăng nhập", s.logged_in ? "" : "Bấm “Đăng nhập Claude Code” bên dưới"],
+    [s.responds, "Phản hồi thử", s.latency_s != null ? `<span class="muted num">${s.latency_s}s</span>` : esc(s.detail || "")],
   ].map(([ok, label, extra]) => `<div class="check"><span class="sev ${ok ? "OK" : "HIGH"}">${ok ? "OK" : "LỖI"}</span>${label} ${extra}</div>`).join("");
+  $("#cc-install").classList.toggle("hidden", s.installed);
+  $("#cc-login").classList.toggle("hidden", !s.installed || s.logged_in);
+  const hint = !s.installed ? "Cài bản chính thức của Anthropic (không cần quyền admin), sau đó đăng nhập bằng tài khoản Claude của bạn."
+    : !s.logged_in ? "Bấm Đăng nhập → cửa sổ Terminal mở ra, làm theo hướng dẫn trên trình duyệt, xong quay lại bấm Kiểm tra lại." : "";
+  $("#cc-hint").textContent = hint;
+  $("#cc-hint").classList.toggle("hidden", !hint);
+  S.claudeLevel = s.level;
+}
+async function installClaude() {
+  const cmd = navigator.userAgent.includes("Windows") ? "irm https://claude.ai/install.ps1 | iex" : "curl -fsSL https://claude.ai/install.sh | bash";
+  if (!confirm(`Cài Claude Code bằng trình cài đặt chính thức của Anthropic?\n\n${cmd}\n\nCần kết nối Internet, mất khoảng 1–2 phút.`)) return;
+  const b = $("#cc-install");
+  b.disabled = true;
+  b.innerHTML = '<span class="spin"></span> Đang cài…';
+  setPill("warn", "Đang cài…", "");
+  const r = await api.install_claude();
+  b.disabled = false;
+  b.innerHTML = '<svg class="i" aria-hidden="true"><use href="#download"/></svg>Cài Claude Code';
+  if (bad(r)) return;
+  if (!r.ok) { toast("Cài chưa thành công: " + (r.output || "").slice(-300), true); await checkClaude(); return; }
+  toast("Đã cài Claude Code. Bước tiếp: đăng nhập.");
+  await checkClaude();
+}
+async function loginClaude() {
+  if (!bad(await api.open_claude_login())) toast("Đã mở Terminal – đăng nhập xong thì bấm Kiểm tra lại.");
 }
 function setPill(level, text, title) {
   const p = $("#cc-pill");
@@ -375,6 +400,11 @@ function wire() {
   $$("nav button").forEach((b) => (b.onclick = () => go(b.dataset.go)));
   $("#theme").onclick = () => { const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark"; applyTheme(t); store("theme", t); };
   $("#cc-recheck").onclick = $("#cc-recheck2").onclick = checkClaude;
+  $("#cc-install").onclick = installClaude;
+  $("#cc-login").onclick = loginClaude;
+  const pillGo = () => { if (S.claudeLevel !== "ok") go("settings"); };
+  $("#cc-pill").onclick = pillGo;
+  $("#cc-pill").onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") pillGo(); };
   $("#pick").onclick = async () => { const r = await api.pick_folder(); if (!bad(r) && r.paths) useInputs(r.paths); };
   $("#pick-files").onclick = async () => { const r = await api.pick_files(); if (!bad(r) && r.paths) useInputs(r.paths); };
   $("#run-btn").onclick = doRun;

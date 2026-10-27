@@ -30,7 +30,7 @@
   <div class="brand"><svg class="i" aria-hidden="true"><use href="#bell"/></svg><span>PMKT <b>Alert</b></span></div>
   <span class="run-meta" id="run-meta">Chưa chạy dữ liệu</span>
   <span class="sp"></span>
-  <span class="pill warn" id="cc-pill" title=""><span class="dot"></span><span id="cc-text">Claude Code: Đang kiểm tra…</span></span>
+  <span class="pill warn" id="cc-pill" title="" role="button" tabindex="0" style="cursor:pointer"><span class="dot"></span><span id="cc-text">Claude Code: Đang kiểm tra…</span></span>
   <button class="btn sm" id="cc-recheck"><svg class="i" aria-hidden="true"><use href="#refresh"/></svg>Kiểm tra lại</button>
   <button class="btn sm ghost" id="theme" aria-label="Đổi giao diện sáng/tối">◐</button>
 </header>
@@ -108,7 +108,12 @@
     <div class="card">
       <h2>Claude Code</h2>
       <div id="cc-checks"></div>
-      <div style="margin-top:10px;display:flex;gap:8px"><button class="btn" id="cc-recheck2"><svg class="i" aria-hidden="true"><use href="#refresh"/></svg>Kiểm tra lại</button></div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn primary hidden" id="cc-install"><svg class="i" aria-hidden="true"><use href="#download"/></svg>Cài Claude Code</button>
+        <button class="btn primary hidden" id="cc-login"><svg class="i" aria-hidden="true"><use href="#play"/></svg>Đăng nhập Claude Code</button>
+        <button class="btn" id="cc-recheck2"><svg class="i" aria-hidden="true"><use href="#refresh"/></svg>Kiểm tra lại</button>
+      </div>
+      <p class="muted hidden" id="cc-hint" style="font-size:12px"></p>
       <p class="muted" style="font-size:12px;margin-bottom:0">Khi Claude không sẵn sàng, app vẫn chạy rule và hiển thị cảnh báo; phần Insight / To-do / Rà soát logic sẽ trống. Dữ liệu gửi cho Claude chỉ là bảng tóm tắt alert, qua tài khoản Claude Code của bạn.</p>
     </div>
     <div class="card">

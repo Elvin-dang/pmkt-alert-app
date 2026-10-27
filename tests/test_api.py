@@ -204,3 +204,26 @@ def test_drop_handler_sends_full_paths_to_ui(tmp_path):
     api._on_drop({"dataTransfer": {"files": [{"name": "a.xlsx", "pywebviewFullPath": "/d/a.xlsx"},
                                               {"name": "b.txt"}]}})
     assert api._window.js == ['window.onDropPaths && onDropPaths(["/d/a.xlsx"])']
+
+
+def test_install_claude_reports_status(tmp_path, monkeypatch):
+    import pmkt_alert.api as api_mod
+    monkeypatch.setattr(api_mod, "install_claude_cli", lambda: {"ok": True, "output": "installed"})
+    api = Api(Store(tmp_path), status_fn=lambda: ClaudeStatus(True, "2.1", False, False, None, "Chưa đăng nhập Claude Code"))
+    out = api.install_claude()
+    assert out["ok"] is True and out["status"]["installed"] is True and out["status"]["logged_in"] is False
+
+
+def test_open_login_requires_installed(tmp_path, monkeypatch):
+    import pmkt_alert.api as api_mod
+    monkeypatch.setattr(api_mod, "claude_exe", lambda: None)
+    assert "error" in Api(Store(tmp_path), status_fn=OK).open_claude_login()
+    launched = []
+    monkeypatch.setattr(api_mod, "claude_exe", lambda: "/x/claude")
+    monkeypatch.setattr(api_mod, "open_login", lambda exe: launched.append(exe))
+    assert Api(Store(tmp_path), status_fn=OK).open_claude_login() == {"ok": True} and launched == ["/x/claude"]
+
+
+def test_bad_claude_status_is_not_an_api_error(tmp_path):
+    s = Api(Store(tmp_path), status_fn=lambda: ClaudeStatus(False, None, False, False, None, "Chưa cài Claude Code")).claude_status()
+    assert "error" not in s and s["detail"] == "Chưa cài Claude Code" and s["level"] == "bad"

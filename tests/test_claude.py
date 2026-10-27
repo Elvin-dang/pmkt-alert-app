@@ -102,8 +102,9 @@ def test_resolves_claude_cmd_via_which():
     assert seen[0][0] == r"C:\npm\claude.cmd"
 
 
-def test_not_on_path_is_not_installed(monkeypatch):
+def test_not_on_path_is_not_installed(monkeypatch, tmp_path):
     monkeypatch.setattr(claude_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(claude_mod.Path, "home", lambda: tmp_path)
     s = check_status(runner=raise_(AssertionError("must not run")))
     assert not s.installed and s.level == "bad"
 
@@ -124,3 +125,46 @@ def test_retryable_flags():
     with pytest.raises(ClaudeError) as e2:
         ask("x", STYLE_SCHEMA, runner=raise_(subprocess.TimeoutExpired("claude", 1)))
     assert e2.value.retryable is False
+
+
+def test_finds_claude_in_install_dir_when_not_on_path(monkeypatch, tmp_path):
+    monkeypatch.setattr(claude_mod.shutil, "which", lambda name: None)
+    monkeypatch.setattr(claude_mod.Path, "home", lambda: tmp_path)
+    assert claude_mod._exe() is None
+    exe = tmp_path / ".local" / "bin" / ("claude.exe" if claude_mod.sys.platform == "win32" else "claude")
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    assert claude_mod._exe() == str(exe)
+
+
+def test_install_commands_are_official(monkeypatch):
+    monkeypatch.setattr(claude_mod.sys, "platform", "win32")
+    assert claude_mod.install_command()[-1] == "irm https://claude.ai/install.ps1 | iex"
+    monkeypatch.setattr(claude_mod.sys, "platform", "darwin")
+    assert claude_mod.install_command() == ["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"]
+
+
+def test_install_success_and_failure(monkeypatch):
+    found = {"v": None}
+    monkeypatch.setattr(claude_mod, "_exe", lambda: found["v"])
+
+    def ok_run(args, **kw):
+        found["v"] = "/home/u/.local/bin/claude"
+        return subprocess.CompletedProcess(args, 0, "Claude Code successfully installed!", "")
+    out = claude_mod.install(runner=ok_run)
+    assert out["ok"] is True and "successfully" in out["output"]
+
+    found["v"] = None
+    out = claude_mod.install(runner=lambda a, **k: subprocess.CompletedProcess(a, 1, "", "curl: (6) Could not resolve host"))
+    assert out["ok"] is False and "Could not resolve host" in out["output"]
+    out = claude_mod.install(runner=raise_(subprocess.TimeoutExpired("x", 600)))
+    assert out["ok"] is False
+
+
+def test_login_command_opens_terminal(monkeypatch):
+    monkeypatch.setattr(claude_mod.sys, "platform", "darwin")
+    cmd = claude_mod.login_command("/u/.local/bin/claude")
+    assert cmd[0] == "osascript" and "/u/.local/bin/claude" in " ".join(cmd)
+    monkeypatch.setattr(claude_mod.sys, "platform", "win32")
+    cmd = claude_mod.login_command(r"C:\u\.local\bin\claude.exe")
+    assert cmd[:3] == ["cmd", "/c", "start"] and cmd[-1] == r"C:\u\.local\bin\claude.exe" and "/k" in cmd
