@@ -47,3 +47,16 @@ def test_campaign_evidence_includes_activity_log(loaded, logic, rj):
 def test_unknown_unit(loaded, logic, rj):
     with pytest.raises(ValueError):
         evidence(loaded, logic, rj, "pl:Nope")
+
+
+def test_score_model_pic_and_pl_evidence(tmp_path, loaded):
+    from factory import make_logic_v3
+    from pmkt_alert.logic import load_logic
+    lg = load_logic(make_logic_v3(tmp_path / "Alert_Logic_v3.xlsx"))
+    rj3 = result_to_json(run_rules(loaded, lg, date(2026, 10, 19)))
+    pic = next(p for p in rj3["pics"] if p["pic"] == "PIC A")
+    ev = evidence(loaded, lg, rj3, "pic:PIC A")
+    assert _section(ev, "raw_mtd")["totals"]["gmv"] == pytest.approx(pic["gmv_mtd"])
+    assert any(c["label"] == "SCORE" for c in ev["calc"]) and ev["thresholds"][0]["key"] == "team_label"
+    pl = evidence(loaded, lg, rj3, "pl:PL Alpha")
+    assert any(c["label"].startswith("s1") for c in pl["calc"]) and "PMKT PIC_Final" in _section(pl, "mapping")["filter"]

@@ -2,7 +2,7 @@
 Vietnamese text, numbers copied from the given rows, and unit_id citations."""
 import json
 
-from .logic import PARAM_LABELS, Logic
+from .logic import ALL_LABELS, DISPLAY, MODELS, Logic
 
 _STR_LIST = {"type": "array", "items": {"type": "string"}}
 INSIGHTS_SCHEMA = {
@@ -96,7 +96,9 @@ def style_text(style: dict, pic: str | None = None) -> str:
 
 
 def params_text(logic: Logic) -> str:
-    lines = [f"- {k} = {logic.params[k]} ({PARAM_LABELS[k][1]})" for k in PARAM_LABELS]
+    lines = [f"Mô hình: {MODELS.get(logic.model, logic.model)}"
+             + (f" · phạm vi team: {logic.texts.get('team_label')}" if logic.texts.get("team_label") else "")]
+    lines += [f"- {k} = {v} ({DISPLAY.get(k, ALL_LABELS[k][1])})" for k, v in logic.params.items() if k in ALL_LABELS]
     lines += [f"- matrix:{k} = {v[0] or '(trống)'}" for k, v in sorted(logic.matrix.items())]
     return "\n".join(lines)
 

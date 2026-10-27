@@ -7,6 +7,9 @@ Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản p
 - Cập nhật app chạy ngầm, không còn mở cửa sổ terminal; nếu lỗi sẽ tự mở lại bản cũ và ghi `update.log`.
 - Cửa sổ "Có gì mới" tự hiện một lần sau mỗi lần cập nhật.
 - Nút **Dừng** khi đang chạy: dừng ngay các lệnh Claude, vẫn giữ đầy đủ kết quả rule.
+- Hỗ trợ **mô hình chấm điểm v3** (file Alert_Logic có trọng số w1–w6): phạm vi theo Team Label, khung Department (regime CÒN ROOM / VƯỢT), điểm 6 yếu tố cho từng PIC và PL, chốt chặn Excess$ vs Dept – khớp chính xác file v3. App tự nhận biết file dùng mô hình nào.
+- Kết quả hiện khung Department, action + điểm của PIC, cột Điểm; bằng chứng cho cả PIC.
+- SCALE UP hiển thị màu xanh lá.
 - File Alert_Logic có lỗi không còn làm dừng lần chạy: app dùng giá trị dự phòng, liệt kê từng lỗi theo ô, và Claude đánh giá lỗi nào nghiêm trọng / nên sửa / bỏ qua được kèm hướng dẫn sửa.
 - Đọc được file logic có bố cục khác (đổi thứ tự / tên mục), liệt kê các tham số app chưa dùng.
 ### Lưu ý

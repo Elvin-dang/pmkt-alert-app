@@ -161,6 +161,8 @@ def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
                              "_row": info["_row"]})
     for c in pic_cols:
         products[c] = _clean_text(info[c])
+    if "Team Label" in info.columns:  # scope for the score model
+        products["team"] = _clean_text(info["Team Label"])
 
     k, letters = read_sheet_with_rows(t, "KPI")
     src("kpi", t, "KPI", letters)

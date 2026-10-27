@@ -136,9 +136,9 @@ def _raw_rows():
 
 
 def make_tracker(path: Path) -> Path:
-    info = [["sku", "asin", "product_line_old", "status", "PMKT PIC_Final", "PIC Oct"],
-            ["S001", "B000000001", "PL Old", "Inactive", "PIC B", "PIC B"]]  # duplicate asin, Active wins
-    info += [[sku, asin, pl, "Active", pic, pic] for asin, sku, pl, pic in PRODUCTS]
+    info = [["sku", "asin", "product_line_old", "status", "PMKT PIC_Final", "PIC Oct", "Team Label"],
+            ["S001", "B000000001", "PL Old", "Inactive", "PIC B", "PIC B", "Team X"]]  # duplicate asin, Active wins
+    info += [[sku, asin, pl, "Active", pic, pic, "Team Y" if pl == "PL Delta" else "Team X"] for asin, sku, pl, pic in PRODUCTS]
     kpi = [["Month", "PIC SEM", "ASIN", "sku", "Product Line (Old)", "GMV", "Spend_final", "TACOS", "PIC"]]
     for month in (9, 10):
         for asin, sku, pl, pic in PRODUCTS:
@@ -205,14 +205,23 @@ def make_all(dir_: Path, names: dict[str, str] | None = None) -> dict[str, Path]
 
 
 def make_logic_v3(path: Path, blank: str | None = None, bad_matrix: bool = False) -> Path:
-    """Mimics the team's v3 layout: re-lettered sections, 'Giá trị' header values, a scoring model
-    instead of the 4 pacing thresholds, extra parameters the app does not use."""
+    """Mimics the team's v3 score model: re-lettered sections, 'Giá trị' header values, weights,
+    sensitivities, score cut-offs, team scope and a computed Department block."""
     rows = [[None, "CONFIG – mọi tham số", None], [None, "As-of date", None], [None, "Time gone", 0.6],
-            [None, "A. Phạm vi", None], [None, "Nhãn team được tracking", "Team X"],
-            [None, "B. Trọng số các yếu tố", "Giá trị"], [None, "w1 – TACoS vs target", 3], [None, "w2 – Department", 3],
-            [None, "D. Mốc điểm → action code", "Giá trị"], [None, "SCALE DOWN nếu điểm ≥", 50],
-            [None, "E. Chốt chặn & luật cứng", "Giá trị"], [None, '"Không chạy" nếu Spend pace <', 0.1],
-            [None, "Ngưỡng cạn budget (%Spend ≥)", 1],
+            [None, "A. Phạm vi", None], [None, "Nhãn team được tracking (cột Team Label, Product Info)", "Team X"],
+            [None, "B. Trọng số các yếu tố", "Giá trị"],
+            [None, "w1 – TACoS vs target của chính nó (PL / PIC)", 3], [None, "w2 – TACoS vs target Department", 3],
+            [None, "w3 – Phụ thuộc ads (Ads GMV ÷ Total GMV so với benchmark)", 2], [None, "w4 – Trend TACoS L7D vs P7D", 2],
+            [None, "w5 – GMV pace so với target", 2], [None, "w6 – Spend pace so với budget", 2],
+            [None, "C. Độ nhạy chuẩn hoá", "Giá trị"], [None, "TACoS lệch so với target (±)", 0.5],
+            [None, "Ads dependency lệch so với benchmark (±)", 0.5], [None, "Trend TACoS (±)", 0.5],
+            [None, "GMV pace lệch so với 1.0 (±)", 0.3], [None, "Spend pace lệch so với 1.0 (±)", 0.5],
+            [None, "D. Mốc điểm → action code", "Giá trị"], [None, "SCALE DOWN nếu điểm ≥", 50], [None, "OPTIMIZE nếu điểm ≥", 25],
+            [None, "SCALE UP nếu điểm ≤", -25], [None, 'Nới ngưỡng SCALE DOWN khi Department "CÒN ROOM" (+)', 15],
+            [None, 'Siết ngưỡng SCALE DOWN khi Department "VƯỢT" (+)', -10],
+            [None, "E. Chốt chặn & luật cứng", "Giá trị"], [None, "Time gone tối thiểu để chấm điểm", 0.15],
+            [None, "Spend MTD tối thiểu của PL/PIC để chấm điểm ($)", 50],
+            [None, '"Không chạy" nếu Spend pace <', 0.1], [None, "Ngưỡng cạn budget (%Spend ≥)", 1],
             [None, "F. Trend L7D vs P7D (ngưỡng thay đổi ±)", "Giá trị"], [None, "Spend", 0.2], [None, "ACoS", 0.25],
             [None, "TACoS", 0.2], [None, "Sàn L7D Spend để xét trend ($)", 50],
             [None, "G. Campaign (L7D)", "Giá trị"], [None, "CUT/OPTIMIZE nếu ACoS camp ÷ ACoS PL >", 1.2],
@@ -222,7 +231,7 @@ def make_logic_v3(path: Path, blank: str | None = None, bad_matrix: bool = False
             [None, "Hạn follow-up = ngày action + (ngày)", 3], [None, '"Đang cải thiện" nếu ACoS L3D ≤ ACoS L7D ×', 0.9],
             [None, "I. k = số order kỳ vọng (theo loại campaign)", "Giá trị"], [None, "SPS_PRODUCTS", 3],
             [None, "SPS_BRANDS", 3], [None, "SPS_DISPLAY", 5],
-            [None, "J. Department (tự tính, không sửa)", "Giá trị"], [None, "Target GMV Dept", 1000]]
+            [None, "J. Department = toàn bộ SKU trong phạm vi (tự tính, không sửa)", "Giá trị"], [None, "Target GMV Dept", 1000]]
     if blank:
         for r in rows:
             if r[1] and str(r[1]).startswith(blank):

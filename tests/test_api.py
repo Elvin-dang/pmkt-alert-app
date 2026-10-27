@@ -367,7 +367,8 @@ def test_run_completes_with_broken_logic_and_reports(tmp_path, synthetic_paths):
     out = api.run([str(d)])
     assert "error" not in out and out["result"]["logic_version"] == 3 and out["result"]["pl"]
     codes = {(i["code"], i["key"]) for i in out["result"]["logic_issues"]}
-    assert ("BLANK", "min_clicks") in codes and ("MISSING", "gmv_pace_low") in codes
+    assert ("BLANK", "min_clicks") in codes and out["result"]["model"] == "score_v3"
+    assert not any(c == "MISSING" for c, _ in codes)  # Ver 1 pacing keys are not part of the score model
     ev = out["ai"]["logic_eval"]  # no Claude: rule-based verdicts so nothing is lost
     assert ev["by_claude"] is False and any(x["verdict"] == "change" for x in ev["items"])
 

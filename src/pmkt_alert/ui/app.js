@@ -187,7 +187,8 @@ function setRun(r) {
   const asOf = S.run.as_of;
   const d = new Date(asOf + "T00:00:00");
   const shift = (n) => { const x = new Date(d); x.setDate(x.getDate() + n); return `${String(x.getDate()).padStart(2, "0")}/${String(x.getMonth() + 1).padStart(2, "0")}`; };
-  $("#run-meta").innerHTML = `Data đến <span class="num">${ddmm(asOf)}/${asOf.slice(0, 4)}</span> · L7D ${shift(-6)}–${shift(0)} vs P7D ${shift(-13)}–${shift(-7)} · Logic <code>Ver ${S.run.logic_version}</code>`;
+  const modelTxt = S.run.model === "score_v3" ? " · mô hình chấm điểm" : "";
+  $("#run-meta").innerHTML = `Data đến <span class="num">${ddmm(asOf)}/${asOf.slice(0, 4)}</span> · L7D ${shift(-6)}–${shift(0)} vs P7D ${shift(-13)}–${shift(-7)} · Logic <code>Ver ${S.run.logic_version}</code>${modelTxt}`;
   $("#f-run").textContent = `Lần chạy: ${S.runId}`;
   $("#f-logic").innerHTML = `Logic: <code>Ver ${S.run.logic_version}</code>`;
   const high = S.run.digest.reduce((a, x) => a + x.pl_high + x.camp_high, 0);
@@ -208,6 +209,7 @@ function renderResults() {
   body.innerHTML = `
     ${S.run.unreliable ? '<div class="warnbar"><svg class="i" aria-hidden="true"><use href="#alert"/></svg><b>CẢNH BÁO DATA</b> – xem tab Data trước khi action.</div>' : ""}
     ${logicBanner()}
+    ${scoreModelHtml(d)}
     <div class="grid g5" style="margin-top:12px">
       <div class="card kpi"><div class="lbl">PL HIGH (pacing)</div><div class="val high num">${d.pl_high}</div></div>
       <div class="card kpi"><div class="lbl">PL MED (pacing)</div><div class="val med num">${d.pl_med}</div></div>
@@ -237,12 +239,30 @@ function claudeMissing(mine) {
   return `<div class="empty"><b>Claude không sẵn sàng</b><br>${esc(err || "")}<br>Kết quả rule vẫn đầy đủ ở tab Cảnh báo.</div>`;
 }
 function evBtn(units, label = "Bằng chứng") {
-  const list = (Array.isArray(units) ? units : [units]).filter((u) => /^(pl|camp):/.test(u || ""));
+  const list = (Array.isArray(units) ? units : [units]).filter((u) => /^(pl|camp|pic):/.test(u || ""));
   if (!list.length) return "";
   return `<button class="fb evb" data-ev="${esc(list.join("|"))}" title="Xem dữ liệu gốc: file, sheet, cột, dòng"><svg class="i" aria-hidden="true"><use href="#file"/></svg>${label}</button>`;
 }
 function opts(list, cur, all) {
   return [`<option value="">${esc(all)}</option>`, ...list.map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`)].join("");
+}
+// SCALE UP = grow → green; otherwise colour follows severity.
+function actionColor(action, sevLevel) {
+  if (String(action || "").startsWith("SCALE UP") || String(action || "").startsWith("MAINTAIN/PUSH")) return "var(--ok)";
+  return sevLevel === "HIGH" ? "var(--high)" : sevLevel === "MED" ? "var(--med)" : "var(--fg)";
+}
+function scoreModelHtml(d) {
+  if (S.run.model !== "score_v3" || !S.run.dept) return "";
+  const dp = S.run.dept, pic = (S.run.pics || []).find((x) => x.pic === S.pic);
+  const regimeCls = dp.regime === "VƯỢT" ? "HIGH" : dp.regime === "CÒN ROOM" ? "OK" : "INFO";
+  return `<div class="card" style="margin-top:12px;display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-size:13px">
+    <span><b>Department</b> · target TACoS <b class="num">${pct(dp.target_tacos, 1)}</b> · actual <b class="num">${pct(dp.actual_tacos, 1)}</b>
+      · coverage <span class="num">${pct(dp.coverage)}</span> · <span class="sev ${regimeCls}">${esc(dp.regime)}</span>
+      · ngưỡng SCALE DOWN <b class="num">${esc(dp.sd_threshold)}</b></span>
+    ${pic ? `<span style="flex:1"></span><span><b>${esc(S.pic)}</b> · <span class="lab" style="color:${actionColor(pic.pacing_action, pic.pacing_sev)}">${esc(pic.pacing_action)}</span>
+      ${pic.score != null ? `· điểm <b class="num">${Math.round(pic.score)}</b>` : ""} · Excess$ vs Dept <b class="num">${money(pic.excess_dept)}</b>
+      ${evBtn("pic:" + S.pic)}</span>` : ""}
+  </div>`;
 }
 function filterBar() {
   const mineCamps = S.run.camp.filter((r) => r.pic === S.pic);
@@ -263,6 +283,7 @@ const SORTS = {
   sev: [(r) => SEV[r.pacing_sev ?? r.sev] ?? 3, 1], name: [(r) => (r.pl || r.campaign || "").toLowerCase(), 1],
   gmv: [(r) => r.pct_gmv ?? -1, -1], spend: [(r) => r.pct_spend ?? -1, -1], tacos: [(r) => r.actual_tacos ?? -1, -1],
   dspend: [(r) => r.d_spend ?? -9, -1], excess: [(r) => r._excess ?? r.excess ?? 0, -1],
+  score: [(r) => r.score ?? -999, -1],
 };
 function sortRows(rows) {
   const [key, natural] = SORTS[S.f.sort] || SORTS.sev;
@@ -286,25 +307,26 @@ function alertsTable() {
   const visible = sortRows(pls);
   if (!visible.length) return '<div class="empty">Không có dòng nào khớp bộ lọc.</div>';
   const sent = new Set(S.feedbackUnits || []);
+  const scoreCol = S.run.model === "score_v3";
   const rows = visible.map((p) => {
     const kids = sortRows(byPl[p.pl] || []);
     const open = S.open.has(p.pl) || (q && kids.length);
-    const color = p.pacing_sev === "HIGH" ? "var(--high)" : p.pacing_sev === "MED" ? "var(--med)" : "var(--fg)";
+    const color = actionColor(p.pacing_action, p.pacing_sev);
     const head = `<tr class="expandable" data-pl="${esc(p.pl)}" aria-expanded="${!!open}"><td>${kids.length ? `<svg class="i" aria-hidden="true" style="transform:rotate(${open ? 90 : 0}deg)"><use href="#chev"/></svg>` : ""}</td>
       <td><b>${esc(p.pl)}</b>${kids.length ? ` <span class="muted">(${kids.length})</span>` : ""}</td><td>${sev(p.pacing_sev)}</td>
       <td class="lab" style="color:${color}">${esc(short(p.pacing_action))}</td><td class="lab">${esc(p.trend_label || "—")}</td>
       <td class="n">${pct(p.pct_gmv)}</td><td class="n">${pct(p.pct_spend)}</td><td class="n">${pct(p.actual_tacos, 1)} <span class="muted">/${pct(p.target_tacos, 1)}</span></td>
-      <td class="n">${signed(p.d_spend)}</td><td class="n">${p._excess ? money(p._excess) : "—"}</td>
+      <td class="n">${signed(p.d_spend)}</td>${scoreCol ? `<td class="n">${p.score != null ? Math.round(p.score) : "—"}</td>` : ""}<td class="n">${p._excess ? money(p._excess) : "—"}</td>
       <td class="acts">${evBtn(p.unit_id)}${fbBtn(p.unit_id, `${p.pl} · ${short(p.pacing_action)}`, sent.has(p.unit_id))}</td></tr>`;
     const children = open ? kids.map((c) => `<tr class="child"><td></td><td class="muted" title="${esc(c.campaign)}">${esc(c.campaign)}</td><td>${sev(c.sev)}</td>
-      <td class="lab">${esc(c.final_label || short(c.base_action))}</td><td class="muted">${esc(c.camp_trend ? c.camp_trend.replace("7D: ", "") : "")}</td><td></td><td></td>
+      <td class="lab" style="color:${actionColor(c.base_action, "")}">${esc(c.final_label || short(c.base_action))}</td><td class="muted">${esc(c.camp_trend ? c.camp_trend.replace("7D: ", "") : "")}</td><td></td><td></td>
       <td class="n">ACoS ${num(c.acos_ratio) ? Number(c.acos_ratio).toFixed(2) + "×" : "—"}</td><td class="n">${signed(c.d_spend)}</td>
-      <td class="n">${money(c.excess)}</td>
+      ${scoreCol ? "<td></td>" : ""}<td class="n">${money(c.excess)}</td>
       <td class="acts">${evBtn(c.unit_id)}${fbBtn(c.unit_id, `${c.campaign} · ${short(c.final_label || c.base_action)}`, sent.has(c.unit_id))}</td></tr>`).join("") : "";
     return head + children;
   }).join("");
   return `<div class="tbl"><table><thead><tr><th></th>${th("Product Line / Campaign", "name")}${th("Mức", "sev")}<th>Pacing / Action</th><th>Trend L7D</th>
-    ${th("GMV %", "gmv", "n")}${th("Spend %", "spend", "n")}${th("TACoS", "tacos", "n")}${th("Δ Spend", "dspend", "n")}${th("Excess $", "excess", "n")}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${th("GMV %", "gmv", "n")}${th("Spend %", "spend", "n")}${th("TACoS", "tacos", "n")}${th("Δ Spend", "dspend", "n")}${scoreCol ? th("Điểm", "score", "n") : ""}${th("Excess $", "excess", "n")}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="muted" style="font-size:12px">${visible.length} PL · bấm tiêu đề cột để sắp xếp · “Bằng chứng” mở dữ liệu gốc.</p>`;
 }
 function todosHtml(mine) {

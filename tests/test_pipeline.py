@@ -64,3 +64,38 @@ def test_pipeline_flags_missing_month_targets(loaded, logic):
     no_oct = dataclasses.replace(loaded, kpi=loaded.kpi[loaded.kpi.month != 10])
     r = run_rules(no_oct, logic, date(2026, 10, 19))
     assert "NO_TARGETS" in {i.code for i in r.issues} and r.unreliable
+
+
+def test_score_model_pipeline(tmp_path, loaded):
+    from factory import make_logic_v3
+    from pmkt_alert.logic import load_logic
+    lg = load_logic(make_logic_v3(tmp_path / "Alert_Logic_System_Team_v3.xlsx"))
+    r = run_rules(loaded, lg, date(2026, 10, 19))
+    j = result_to_json(r)
+    json.dumps(j, allow_nan=False)
+    assert j["model"] == "score_v3" and "PL Delta" not in {p["pl"] for p in j["pl"]}  # other team out of scope
+    assert {p["pic"] for p in j["pics"]} == {"PIC A", "PIC B"} and all("score" in p for p in j["pl"])
+    assert set(j["dept"]) >= {"target_tacos", "actual_tacos", "coverage", "regime", "sd_threshold"}
+    assert j["dept"]["coverage"] == 1.0
+    d = {x["pic"]: x for x in j["digest"]}
+    assert "pic_action" in d["PIC A"] and "excess_dept" in d["PIC A"]
+    assert {i.code for i in r.issues} >= {"OUT_OF_SCOPE"}
+
+
+def test_rules_model_unchanged_output_keys(loaded, logic):
+    j = result_to_json(run_rules(loaded, logic, date(2026, 10, 19)))
+    assert j["model"] == "rules_v1" and j["pics"] == [] and j["dept"] is None
+
+
+def test_out_of_scope_ads_are_not_reported_as_unmapped(tmp_path, loaded, logic):
+    import dataclasses
+    import pandas as pd
+    from factory import make_logic_v3
+    from pmkt_alert.logic import load_logic
+    oct_rows = loaded.ads[(loaded.ads.asin == "B000000001") & (loaded.ads.date >= date(2026, 10, 1))]
+    other_team = oct_rows.head(3).assign(asin="B000000006")  # PL Delta = Team Y, inside MTD
+    inp = dataclasses.replace(loaded, ads=pd.concat([loaded.ads, other_team], ignore_index=True))
+    v3 = run_rules(inp, load_logic(make_logic_v3(tmp_path / "Alert_Logic_v3.xlsx")), date(2026, 10, 19))
+    v1 = run_rules(inp, logic, date(2026, 10, 19))
+    unmapped = lambda r: next(i.amount for i in r.issues if i.code == "UNMAPPED")  # noqa: E731
+    assert unmapped(v3) == unmapped(v1)  # only the truly unmapped orphan campaign

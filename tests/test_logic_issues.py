@@ -13,17 +13,33 @@ def test_v1_file_has_no_issues(tmp_path):
     assert lg.issues == [] and lg.params == DEFAULT_PARAMS
 
 
-def test_v3_layout_parses_by_label_and_reports_missing(tmp_path):
+def test_v3_score_model_detected_and_parsed(tmp_path):
     lg = load_logic(make_logic_v3(tmp_path / "Alert_Logic_System_Team_v3.xlsx"))
-    assert lg.version == 3
+    assert lg.version == 3 and lg.model == "score_v3"
     assert lg.params["trend_acos"] == 0.25 and lg.params["camp_cut"] == 1.2 and lg.k_by_type["SPS_DISPLAY"] == 5
-    assert lg.cells["camp_cut"].startswith("Config!C")
-    missing = {i["key"] for i in lg.issues if i["code"] == "MISSING"}
-    assert missing == {"gmv_pace_low", "spend_pace_low", "spend_pace_high", "tacos_over"}
-    assert lg.params["gmv_pace_low"] == DEFAULT_PARAMS["gmv_pace_low"]  # fallback keeps the run going
-    assert all(i["used"] is not None for i in lg.issues if i["code"] == "MISSING")
-    unused = [i for i in lg.issues if i["code"] == "UNUSED"]
-    assert any("w1" in i["label"] for i in unused) and not any(i["label"].startswith("Giá trị") for i in unused)
+    assert lg.params["w1"] == 3 and lg.params["w3"] == 2 and lg.params["sens_gmv"] == 0.3
+    assert lg.params["score_sd"] == 50 and lg.params["score_up"] == -25 and lg.params["sd_room"] == 15
+    assert lg.params["sd_over"] == -10 and lg.params["min_time_gone"] == 0.15 and lg.params["min_spend"] == 50
+    assert lg.texts["team_label"] == "Team X"
+    assert [i for i in lg.issues if i["code"] == "MISSING"] == []  # Ver 1 pacing keys are not required here
+    unused = [i["label"] for i in lg.issues if i["code"] == "UNUSED"]
+    assert unused == []  # Department block is computed by the app, not read
+
+
+def test_v1_model_detected(tmp_path):
+    assert load_logic(make_logic(tmp_path / "Alert_Logic_Ver 1.xlsx")).model == "rules_v1"
+
+
+def test_v3_missing_weight_reported(tmp_path):
+    import openpyxl
+    p = make_logic_v3(tmp_path / "v3.xlsx")
+    wb = openpyxl.load_workbook(p)
+    for r in wb["Config"].iter_rows(min_col=2, max_col=3):
+        if r[0].value and str(r[0].value).startswith("w4"):
+            r[0].value = "trọng số khác"
+    wb.save(p)
+    lg = load_logic(p)
+    assert lg.model == "score_v3" and any(i["code"] == "MISSING" and i["key"] == "w4" for i in lg.issues)
 
 
 def test_blank_value_falls_back_and_is_reported(tmp_path):
@@ -34,10 +50,10 @@ def test_blank_value_falls_back_and_is_reported(tmp_path):
 
 def test_fallback_prefers_previous_good_logic(tmp_path):
     prev = load_logic(make_logic(tmp_path / "Alert_Logic_Ver 1.xlsx"))
-    prev.params["gmv_pace_low"] = 0.7
-    lg = load_logic(make_logic_v3(tmp_path / "v3.xlsx"), fallback=prev)
-    assert lg.params["gmv_pace_low"] == 0.7
-    assert next(i for i in lg.issues if i.get("key") == "gmv_pace_low")["used_from"] == "Alert_Logic_Ver 1.xlsx"
+    prev.params["min_clicks"] = 20
+    lg = load_logic(make_logic_v3(tmp_path / "v3.xlsx", blank="Sàn click tối thiểu"), fallback=prev)
+    assert lg.params["min_clicks"] == 20
+    assert next(i for i in lg.issues if i.get("key") == "min_clicks")["used_from"] == "Alert_Logic_Ver 1.xlsx"
 
 
 def test_bad_matrix_label_and_range_checks(tmp_path):

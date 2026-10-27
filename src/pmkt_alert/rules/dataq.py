@@ -15,8 +15,15 @@ class Issue:
 
 def data_check(*, unmapped_rows: int, unmapped_spend: float, ads_spend_mtd: float, raw_spend_mtd: float,
                unmatched_camps: pd.DataFrame, duplicates: int, no_pic_pls: list[str], log_skipped: int,
-               log_empty: bool, no_targets: bool = False) -> list[Issue]:
+               log_empty: bool, no_targets: bool = False, out_of_scope: int = 0, scope_label: str = "",
+               in_scope: int | None = None) -> list[Issue]:
     out = []
+    if in_scope == 0:
+        out.append(Issue("NO_SCOPE", "WARN", f"Không có ASIN nào thuộc team '{scope_label}'",
+                         "Kiểm tra 'Nhãn team được tracking' trong file logic và cột Team Label trong Product Info.", None))
+    if out_of_scope:
+        out.append(Issue("OUT_OF_SCOPE", "INFO", f"{out_of_scope} ASIN ngoài phạm vi team '{scope_label}'",
+                         "Theo file logic, chỉ tính SKU có Team Label đúng nhãn team – các ASIN khác bị bỏ qua.", None))
     if no_targets:
         out.append(Issue("NO_TARGETS", "WARN", "KPI không có target cho tháng của as-of",
                          "Mọi PL sẽ là NO PLAN. Kiểm tra sheet KPI (Month) hoặc chọn as-of khác.", None))

@@ -13,14 +13,17 @@ def pic_column(columns: list[str], as_of: date) -> str:
     return col if col in columns else "PMKT PIC_Final"
 
 
-def asin_map(products: pd.DataFrame, as_of: date) -> pd.DataFrame:
-    col = pic_column(list(products.columns), as_of)
+def asin_map(products: pd.DataFrame, as_of: date, pic_col: str | None = None) -> pd.DataFrame:
+    col = pic_col if pic_col and pic_col in products.columns else pic_column(list(products.columns), as_of)
     df = products.assign(_active=(products["status"] == "Active").astype(int), _order=range(len(products)))
     df = df.sort_values(["_active", "_order"], ascending=[False, True])
     deduped = df.drop_duplicates("asin")
     pic = deduped[col] if col in deduped.columns else pd.Series("", index=deduped.index)
     out = pd.DataFrame({"asin": deduped["asin"], "sku": deduped["sku"], "pl": deduped["pl"],
-                        "pic": pic.replace("", NO_PIC)}).sort_index().reset_index(drop=True)
+                        "pic": pic.replace("", NO_PIC)})
+    if "team" in deduped.columns:
+        out["team"] = deduped["team"]
+    out = out.sort_index().reset_index(drop=True)
     out.attrs["duplicates"] = len(products) - len(deduped)
     return out
 
@@ -38,7 +41,7 @@ def _sum_by_pl(df: pd.DataFrame, amap: pd.DataFrame, cols: dict[str, str]) -> pd
 def pl_frame(inputs, amap: pd.DataFrame, win: Windows) -> pd.DataFrame:
     raw, ads = inputs.raw, inputs.ads
     parts = [
-        _sum_by_pl(_between(raw, win.mtd), amap, {"gmv": "gmv_mtd", "spend": "spend_mtd"}),
+        _sum_by_pl(_between(raw, win.mtd), amap, {"gmv": "gmv_mtd", "spend": "spend_mtd", "ads_gmv": "ads_gmv_mtd"}),
         _sum_by_pl(_between(raw, win.l7d), amap, {"spend": "l7d_spend", "ads_gmv": "l7d_ads_gmv", "gmv": "l7d_gmv"}),
         _sum_by_pl(_between(raw, win.p7d), amap, {"spend": "p7d_spend", "ads_gmv": "p7d_ads_gmv", "gmv": "p7d_gmv"}),
         _sum_by_pl(_between(ads, win.l7d), amap, {"spend": "camp_l7d_spend", "clicks": "camp_l7d_clicks",
@@ -54,7 +57,7 @@ def pl_frame(inputs, amap: pd.DataFrame, win: Windows) -> pd.DataFrame:
     keep = (pl[["target_gmv", "target_spend", "gmv_mtd", "spend_mtd", "l7d_spend", "p7d_spend",
                 "l7d_gmv", "p7d_gmv", "camp_l7d_spend"]] != 0).any(axis=1)
     pl = pl[keep].rename_axis("pl").reset_index()
-    cols = ["pl", "pic", "target_gmv", "target_spend", "target_tacos", "gmv_mtd", "spend_mtd", "l7d_spend",
+    cols = ["pl", "pic", "target_gmv", "target_spend", "target_tacos", "gmv_mtd", "spend_mtd", "ads_gmv_mtd", "l7d_spend",
             "p7d_spend", "l7d_ads_gmv", "p7d_ads_gmv", "l7d_gmv", "p7d_gmv", "camp_l7d_spend", "camp_l7d_clicks",
             "camp_l7d_sales", "camp_l7d_orders"]
     return pl[cols]

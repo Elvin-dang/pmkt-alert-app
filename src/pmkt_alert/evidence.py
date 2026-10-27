@@ -74,11 +74,11 @@ def _pct(v) -> str:
 
 
 def _thresholds(logic: Logic, keys: list[str]) -> list[dict]:
-    from .logic import PARAM_LABELS
+    from .logic import ALL_LABELS, DISPLAY
     out = []
     for k in keys:
         if k in logic.params:
-            label = PARAM_LABELS[k][1]
+            label = DISPLAY.get(k, ALL_LABELS[k][1])
             if k in ("trend_spend", "trend_acos", "trend_tacos"):
                 label = f"Ngưỡng thay đổi {label} L7D vs P7D (±)"
             out.append({"key": k, "label": label, "cell": logic.cells.get(k, "Config"),
@@ -89,20 +89,26 @@ def _thresholds(logic: Logic, keys: list[str]) -> list[dict]:
     return out
 
 
-def _pl_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFrame, pl: str) -> dict:
-    row = next((r for r in rj["pl"] if r["pl"] == pl), None)
+def _pl_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFrame, pl: str, level: str = "pl") -> dict:
+    """Evidence for a Product Line, or (score model) for a whole PIC when level == 'pic'."""
+    rows = rj["pl"] if level == "pl" else rj.get("pics", [])
+    row = next((r for r in rows if r.get(level) == pl), None)
     if row is None:
-        raise ValueError(f"Không có Product Line '{pl}' trong lần chạy này")
-    asins = set(amap.loc[amap["pl"] == pl, "asin"])
-    pic_col = pic_column(list(inputs.products.columns), win.as_of)
+        raise ValueError(f"Không có {'Product Line' if level == 'pl' else 'PIC'} '{pl}' trong lần chạy này")
+    asins = set(amap.loc[amap[level] == pl, "asin"])
+    pic_col = "PMKT PIC_Final" if rj.get("model") == "score_v3" else pic_column(list(inputs.products.columns), win.as_of)
     raw = inputs.raw[inputs.raw["asin"].isin(asins)]
     ads = inputs.ads[inputs.ads["asin"].isin(asins)]
     kpi = inputs.kpi[(inputs.kpi["asin"].isin(asins)) & (inputs.kpi["month"] == win.as_of.month)]
     prods = inputs.products[inputs.products["asin"].isin(asins)]
-    asin_txt = f"{len(asins)} ASIN của PL (product_line_old = '{pl}')"
+    asin_txt = (f"{len(asins)} ASIN của PL (product_line_old = '{pl}')" if level == "pl"
+                else f"{len(asins)} ASIN của PIC '{pl}'")
+    if rj.get("model") == "score_v3" and logic.texts.get("team_label"):
+        asin_txt += f" · chỉ Team Label = '{logic.texts['team_label']}'"
+    map_filter = (f"product_line_old = '{pl}'" if level == "pl" else f"{pic_col} = '{pl}'") + f" · PIC lấy từ cột {pic_col}"
     raw_show = ["date", "asin", "sku", "gmv", "ads_gmv", "spend"]
     sections = [
-        _section(inputs, "mapping", "Mapping ASIN → PL → PIC", "products", prods, f"product_line_old = '{pl}' · PIC lấy từ cột {pic_col}",
+        _section(inputs, "mapping", "Mapping ASIN → PL → PIC", "products", prods, map_filter,
                  {}, ["asin", "sku", "pl", pic_col, "status"]),
         _section(inputs, "kpi", f"Target tháng {win.as_of.month}", "kpi", kpi, f"Month = {win.as_of.month} · {asin_txt}",
                  KPI_COLS, ["month", "asin", "gmv", "spend"]),
@@ -117,6 +123,8 @@ def _pl_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFram
                  ["date", "campaign_id", "asin", "spend", "clicks", "sales", "orders"]),
     ]
     g = lambda k: row.get(k)  # noqa: E731
+    if logic.model == "score_v3":
+        return _pl_score_evidence(logic, rj, win, row, pl, sections)
     calc = [
         {"label": "%GMV vs target", "formula": f"{g('gmv_mtd'):,.2f} ÷ {g('target_gmv'):,.2f}", "value": _pct(g("pct_gmv"))},
         {"label": "%Spend vs target", "formula": f"{g('spend_mtd'):,.2f} ÷ {g('target_spend'):,.2f}", "value": _pct(g("pct_spend"))},
@@ -137,6 +145,38 @@ def _pl_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFram
                            "value": logic.matrix[g("trend_key")][0] or "(trống)", "file": logic.path.name})
     return {"unit_id": row["unit_id"], "title": f"{pl} · {g('pacing_action')}", "sections": sections, "calc": calc,
             "thresholds": thresholds}
+
+
+def _pl_score_evidence(logic: Logic, rj: dict, win: Windows, row: dict, pl: str, sections: list) -> dict:
+    p, d, g = logic.params, rj.get("dept") or {}, row.get
+    sens = {"s1": ("TACoS ÷ target riêng − 1", "sens_tacos", "w1"), "s2": ("TACoS ÷ target Dept − 1", "sens_tacos", "w2"),
+            "s3": ("−(Ads dependency ÷ benchmark − 1)", "sens_ads", "w3"), "s4": ("Δ TACoS L7D vs P7D", "sens_trend", "w4"),
+            "s5": ("GMV pace − 1", "sens_gmv", "w5"), "s6": ("Spend pace − 1", "sens_spend", "w6")}
+    calc = [
+        {"label": "TACoS MTD", "formula": f"{g('spend_mtd'):,.2f} ÷ {g('gmv_mtd'):,.2f}", "value": _pct(g("actual_tacos"))},
+        {"label": "Target TACoS riêng / Dept", "formula": "target spend ÷ target GMV", "value": f"{_pct(g('target_tacos'))} / {_pct(d.get('target_tacos'))}"},
+        {"label": "Ads dependency", "formula": f"Ads GMV ÷ GMV · benchmark Dept {_pct(d.get('benchmark'))}", "value": _pct(g("ads_dep"))},
+        {"label": "GMV pace / Spend pace", "formula": f"% so target ÷ time gone {win.time_gone:.1%}", "value": f"{g('gmv_pace'):.2f} / {g('spend_pace'):.2f}"},
+        *[{"label": f"{k} (×{p[w]:g})", "formula": f"({desc}) ÷ {p[s]:g} × 100, giới hạn ±100", "value": f"{g(k):+.1f}"}
+          for k, (desc, s, w) in sens.items()],
+        {"label": "SCORE", "formula": "Σ(w × s) ÷ Σw", "value": "—" if g("score") is None else f"{g('score'):+.1f}"},
+        {"label": "Excess$ vs Dept", "formula": f"{g('spend_mtd'):,.2f} − {_pct(d.get('target_tacos'))} × {g('gmv_mtd'):,.2f}", "value": f"${g('excess_dept'):,.2f}"},
+        {"label": "Department", "formula": f"coverage {_pct(d.get('coverage'))} · ngưỡng SCALE DOWN đang áp dụng {d.get('sd_threshold')}",
+         "value": d.get("regime", "—")},
+        {"label": "Action", "formula": "NO DATA → NO PLAN → KHÔNG CHẠY → CHƯA ĐỦ DATA → điểm (chốt chặn Excess$ vs Dept) → BUDGET CAP",
+         "value": f"{g('pacing_action')} ({g('pacing_sev') or 'không mức'})"},
+        {"label": "Trend L7D vs P7D", "formula": f"key {g('trend_key')} tra Matrix_PL", "value": g("trend_label") or "(không nhãn)"},
+    ]
+    keys = [f"w{i}" for i in range(1, 7)] + ["sens_tacos", "sens_ads", "sens_trend", "sens_gmv", "sens_spend", "score_sd",
+                                             "score_opt", "score_up", "sd_room", "sd_over", "min_time_gone", "min_spend",
+                                             "not_running", "budget_cap", "trend_spend", "trend_acos", "trend_tacos",
+                                             "trend_min_spend"]
+    thresholds = _thresholds(logic, keys)
+    if logic.texts.get("team_label"):
+        thresholds.insert(0, {"key": "team_label", "label": "Phạm vi: Team Label", "cell": logic.cells.get("team_label", "Config"),
+                              "value": logic.texts["team_label"], "file": logic.path.name})
+    return {"unit_id": row["unit_id"], "title": f"{pl} · {g('pacing_action')} (score {g('score') or 0:+.0f})",
+            "sections": sections, "calc": calc, "thresholds": thresholds}
 
 
 def _camp_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFrame, unit_id: str) -> dict:
@@ -179,11 +219,19 @@ def _camp_evidence(inputs, logic: Logic, rj: dict, win: Windows, amap: pd.DataFr
             "thresholds": thresholds}
 
 
-def evidence(inputs, logic: Logic, rj: dict, unit_id: str) -> dict:
+def evidence(inputs, logic: Logic, rj: dict, unit_id: str) -> dict:  # noqa: C901
     win = Windows(date.fromisoformat(rj["as_of"]))
-    amap = asin_map(inputs.products, win.as_of)
+    if rj.get("model") == "score_v3":
+        amap = asin_map(inputs.products, win.as_of, pic_col="PMKT PIC_Final")
+        label = logic.texts.get("team_label")
+        if label and "team" in amap.columns:
+            amap = amap[amap["team"] == label]
+    else:
+        amap = asin_map(inputs.products, win.as_of)
     if unit_id.startswith("pl:"):
         return _pl_evidence(inputs, logic, rj, win, amap, unit_id[3:])
+    if unit_id.startswith("pic:"):
+        return _pl_evidence(inputs, logic, rj, win, amap, unit_id[4:], level="pic")
     if unit_id.startswith("camp:"):
         return _camp_evidence(inputs, logic, rj, win, amap, unit_id)
     raise ValueError(f"Không có bằng chứng cho '{unit_id}'")
