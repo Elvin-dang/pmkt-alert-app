@@ -9,6 +9,7 @@ from pathlib import Path
 from . import __version__
 from .ai import evaluate_logic, generate, offline, pic_rows
 from .aggregate import asin_map
+from .changelog import bundled_text, parse as parse_changelog
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
 from .claude import ClaudeError, ask, check_status, grounded, open_login
 from .claude import _exe as claude_exe
@@ -447,6 +448,23 @@ class Api:
                 "published": rel.published if rel else "",
                 "previous": [{"tag": r.tag, "notes": r.notes, "published": r.published} for r in self._recent(repo)][1:]
                 if rel else []}
+
+    @safe
+    def whats_new(self) -> dict:
+        """Notes for the installed version from the bundled CHANGELOG.md; `show` once after each update."""
+        sections = parse_changelog(bundled_text())
+        cur = __version__.split("-")[0]
+        mine = sections.get(cur, {"date": "", "notes": ""})
+        seen = self._store.get_settings().get("last_seen_version")
+        return {"version": cur, "date": mine["date"], "notes": mine["notes"],
+                "show": "-dev" not in __version__ and seen != __version__ and bool(mine["notes"]),
+                "previous": [{"tag": f"v{v}", "notes": s["notes"], "published": s["date"]}
+                             for v, s in sections.items() if v != cur][:5]}
+
+    @safe
+    def mark_whats_new_seen(self) -> dict:
+        self._store.save_settings({"last_seen_version": __version__})
+        return {"ok": True}
 
     @safe
     def install_update(self) -> dict:

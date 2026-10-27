@@ -547,6 +547,20 @@ function openWn() {
   $("#wn-stat").textContent = "";
   $("#wn").classList.add("on");
 }
+function showInstalledNotes(w) {
+  S.installedNotes = true;
+  $("#wntitle").textContent = `Có gì mới – v${w.version}`;
+  $("#wn-date").textContent = (w.date ? w.date + " · " : "") + "bạn vừa cập nhật lên phiên bản này";
+  $("#wn-notes").innerHTML = md(w.notes);
+  $("#wn-prev").innerHTML = w.previous.length ? `<details><summary class="muted" style="cursor:pointer;font-size:13px">Phiên bản trước</summary>${w.previous.map((p) => `<h3>${esc(p.tag)}</h3>${md(p.notes)}`).join("")}</details>` : "";
+  $("#wn-install").classList.add("hidden");
+  $("#wn-stat").textContent = "";
+  $("#wn").classList.add("on");
+}
+function closeWn() {
+  $("#wn").classList.remove("on");
+  if (S.installedNotes) { S.installedNotes = false; api.mark_whats_new_seen(); }
+}
 async function install() {
   $("#wn-install").disabled = true;
   $("#wn-stat").innerHTML = '<span class="spin"></span> Đang tải và kiểm tra checksum… app sẽ tự đóng và mở lại.';
@@ -658,13 +672,13 @@ function wire() {
   $("#upd-whatsnew").onclick = $("#upd-whatsnew2").onclick = $("#f-version").onclick = openWn;
   $("#upd-now").onclick = () => { openWn(); install(); };
   $("#upd-later").onclick = () => $("#upd-banner").classList.add("hidden");
-  $("#wn-close").onclick = $("#wn-later").onclick = () => $("#wn").classList.remove("on");
-  $("#wn").onclick = (e) => { if (e.target.id === "wn") $("#wn").classList.remove("on"); };
+  $("#wn-close").onclick = $("#wn-later").onclick = closeWn;
+  $("#wn").onclick = (e) => { if (e.target.id === "wn") closeWn(); };
   $("#wn-install").onclick = install;
   $("#ev-close").onclick = () => $("#ev").classList.remove("on");
   $("#ev").onclick = (e) => { if (e.target.id === "ev") $("#ev").classList.remove("on"); };
   $("#ev-tabs").onclick = (e) => { const b = e.target.closest("[data-evi]"); if (b) { S.ev.i = Number(b.dataset.evi); showEvidence(); } };
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeFb(); $("#wn").classList.remove("on"); $("#ev").classList.remove("on"); } });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeFb(); closeWn(); $("#ev").classList.remove("on"); } });
 }
 
 async function init() {
@@ -683,6 +697,8 @@ async function init() {
   }
   const last = await api.results();
   if (!last.error && last.result) { setRun(last); go("results"); }
+  const w = await api.whats_new();
+  if (!w.error && w.show) showInstalledNotes(w);
   loadLessons();
   loadReview();
 }

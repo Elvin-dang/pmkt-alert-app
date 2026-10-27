@@ -3,13 +3,14 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-import tempfile
+import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 
 DEFAULT_REPO = "Elvin-dang/pmkt-alert-app"
 
@@ -92,46 +93,77 @@ def download_verified(rel: Release, dest_dir: Path, fetch=urllib.request.urlopen
 EXE_NAME = "PMKT-Alert.exe"
 
 
-def swap_script(new_exe: Path, current_exe: Path, pid: int) -> str:
-    """Batch file (UTF-8, chcp 65001 for non-ASCII profile paths). Waits for the app to exit, retries the
-    move while the exe is still locked, and always relaunches – the old exe if the swap fails.
-    The updated app is always named PMKT-Alert.exe; an old versioned file is removed after a successful swap."""
-    pause = "ping -n 2 127.0.0.1 >nul"  # `timeout` fails without a console
-    current = PureWindowsPath(str(current_exe))  # the script only ever runs on Windows
-    target = current.with_name(EXE_NAME)
-    cleanup = [f'del "{current}" >nul 2>&1'] if current.name.lower() != EXE_NAME.lower() else []
-    return "\r\n".join([
-        "@echo off",
-        "chcp 65001 >nul",
-        ":wait",
-        f'tasklist /FI "PID eq {pid}" | find "{pid}" >nul',
-        f"if not errorlevel 1 ({pause} & goto wait)",
-        "set /a tries=0",
-        ":move",
-        f'move /y "{new_exe}" "{target}" >nul',
-        "if not errorlevel 1 goto ok",
-        "set /a tries+=1",
-        "if %tries% geq 30 goto fail",
-        pause,
-        "goto move",
-        ":ok",
-        *cleanup,
-        f'start "" "{target}"',
-        'del "%~f0"',
-        "exit /b 0",
-        ":fail",
-        f'start "" "{current}"',
-        'del "%~f0"',
-        "exit /b 1",
-    ])
+def _wait_pid(pid: int, timeout: float) -> None:
+    """Block until process `pid` has exited (or timeout)."""
+    if sys.platform == "win32":
+        import ctypes
+        k32 = ctypes.windll.kernel32
+        handle = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if handle:
+            k32.WaitForSingleObject(handle, int(timeout * 1000))
+            k32.CloseHandle(handle)
+        return
+    import time
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return
+        time.sleep(0.5)
+
+
+def _launch(path: Path, *args: str) -> None:
+    flags = (subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP) if sys.platform == "win32" else 0
+    subprocess.Popen([str(path), *args], close_fds=True, creationflags=flags)
+
+
+def finish_update(old_exe: Path, pid: int, me: Path, wait_fn=_wait_pid, copy_fn=shutil.copy2, launch_fn=_launch,
+                  unlink_fn=lambda p: Path(p).unlink(), sleep_fn=time.sleep, tries: int = 30, log=print) -> Path:
+    """Run by the NEW exe (`--finish-update <old_exe> <pid>`): no console, no batch file.
+    Waits for the old app to exit, copies itself to <old folder>/PMKT-Alert.exe (retrying while Windows
+    still locks it), removes an old versioned file, starts the app. On failure the old app is reopened."""
+    old_exe = Path(old_exe)
+    target = old_exe.with_name(EXE_NAME)
+    log(f"finish-update: wait for pid {pid}")
+    wait_fn(pid, 60)
+    for attempt in range(1, tries + 1):
+        try:
+            copy_fn(me, target)
+            log(f"finish-update: copied to {target} (attempt {attempt})")
+            break
+        except OSError as e:
+            log(f"finish-update: copy attempt {attempt} failed: {e}")
+            sleep_fn(1)
+    else:
+        log("finish-update: giving up, reopening the old app")
+        launch_fn(old_exe)
+        return old_exe
+    if old_exe.name.lower() != EXE_NAME.lower():
+        try:
+            unlink_fn(old_exe)
+        except OSError as e:
+            log(f"finish-update: could not remove {old_exe}: {e}")
+    launch_fn(target)
+    log(f"finish-update: started {target}")
+    return target
 
 
 def apply_update(new_exe: Path) -> None:
+    """Called by the OLD app after download: start the new exe to finish the swap, then the caller exits."""
     if not getattr(sys, "frozen", False) or sys.platform != "win32":
         raise RuntimeError("Chỉ cập nhật được bản .exe trên Windows")
-    script = Path(tempfile.gettempdir()) / "pmkt-alert-update.bat"
     # One-file builds run as a child of the bootloader, which holds the exe until it exits: wait for the parent.
     pid = os.getppid() if hasattr(sys, "_MEIPASS") else os.getpid()
-    script.write_text(swap_script(Path(new_exe), Path(sys.executable), pid), encoding="utf-8")
-    subprocess.Popen(["cmd", "/c", str(script)], close_fds=True,
-                     creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
+    _launch(Path(new_exe), "--finish-update", sys.executable, str(pid))
+
+
+def cleanup_downloads(updates_dir: Path) -> None:
+    """Remove downloaded installers left from a previous update (best effort)."""
+    running = Path(sys.executable).resolve()
+    for p in Path(updates_dir).glob("*.exe"):
+        try:
+            if p.resolve() != running:
+                p.unlink()
+        except OSError:
+            pass

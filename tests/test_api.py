@@ -387,3 +387,19 @@ def test_claude_evaluates_logic_issues(tmp_path, synthetic_paths):
     crit = [x for x in ev["items"] if x["verdict"] == "critical"]
     assert len(crit) == 1 and crit[0]["issue"]["key"] == out["result"]["logic_issues"][0]["key"]
     assert all(x["issue"] for x in ev["items"])  # unknown refs dropped
+
+
+def test_whats_new_shows_once_per_version(tmp_path, monkeypatch):
+    import pmkt_alert.api as api_mod
+    monkeypatch.setattr(api_mod, "__version__", "0.1.4")
+    api = Api(Store(tmp_path), status_fn=OK)
+    w = api.whats_new()
+    assert w["version"] == "0.1.4" and w["show"] is True and "terminal" in w["notes"] and w["previous"]
+    api.mark_whats_new_seen()
+    assert api.whats_new()["show"] is False
+
+
+def test_whats_new_hidden_in_dev(tmp_path, monkeypatch):
+    import pmkt_alert.api as api_mod
+    monkeypatch.setattr(api_mod, "__version__", "0.0.0-dev")
+    assert Api(Store(tmp_path), status_fn=OK).whats_new()["show"] is False

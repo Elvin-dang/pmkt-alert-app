@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from pmkt_alert.updater import Release, download_verified, is_newer, latest_release, parse_version, recent_releases, swap_script
+from pmkt_alert.updater import Release, download_verified, is_newer, latest_release, parse_version, recent_releases
 
 REL = {"tag_name": "v1.3.0", "body": "## Mới\n- a", "published_at": "2026-10-26T00:00:00Z",
        "assets": [{"name": "PMKT-Alert-v1.3.0.exe", "browser_download_url": "u1"},
@@ -66,27 +66,3 @@ def test_checksum_mismatch_deletes(tmp_path):
     with pytest.raises(ValueError, match="Checksum"):
         download_verified(rel, tmp_path, fetch=fake_bytes({rel.exe_url: b"abc", rel.sha_url: b"deadbeef  a.exe"}))
     assert not list(tmp_path.iterdir())
-
-
-def test_swap_script_keeps_old_on_failure():
-    s = swap_script(Path(r"C:\t\new.exe"), Path(r"C:\a\PMKT-Alert.exe"), 1234)
-    assert 'PID eq 1234' in s and 'move /y "C:\\t\\new.exe" "C:\\a\\PMKT-Alert.exe"' in s and "exit /b 1" in s
-    assert s.index("move /y") < s.index('start ""')
-
-
-def test_swap_script_robust():
-    s = swap_script(Path(r"C:\Users\Hà\new.exe"), Path(r"C:\a\PMKT-Alert.exe"), 1234)
-    assert s.startswith("@echo off\r\nchcp 65001")
-    assert "timeout" not in s and "ping -n 2 127.0.0.1" in s
-    assert "set /a tries" in s
-    fail = s.index(":fail")
-    assert 'start "" "C:\\a\\PMKT-Alert.exe"' in s[fail:]  # old app relaunched if the swap fails
-
-
-def test_swap_renames_versioned_exe_to_plain_name():
-    s = swap_script(Path(r"C:\t\new.exe"), Path(r"C:\Users\a\Downloads\PMKT-Alert-v0.1.2.exe"), 7)
-    assert 'move /y "C:\\t\\new.exe" "C:\\Users\\a\\Downloads\\PMKT-Alert.exe"' in s
-    ok = s[s.index(":ok"):s.index(":fail")]
-    assert 'del "C:\\Users\\a\\Downloads\\PMKT-Alert-v0.1.2.exe"' in ok and 'start "" "C:\\Users\\a\\Downloads\\PMKT-Alert.exe"' in ok
-    fail = s[s.index(":fail"):]
-    assert 'start "" "C:\\Users\\a\\Downloads\\PMKT-Alert-v0.1.2.exe"' in fail  # old one still works

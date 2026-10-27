@@ -14,6 +14,9 @@ jobs:
           python-version: "3.12"
       - run: pip install -e ".[dev]"
       - run: pytest -q
+      - name: Release notes from CHANGELOG.md (fails if this version has no entry)
+        shell: bash
+        run: PYTHONIOENCODING=utf-8 python -m pmkt_alert.changelog "${{ github.ref_name }}" > notes.md && cat notes.md
       - name: Stamp version
         shell: bash
         run: |
@@ -37,4 +40,4 @@ jobs:
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create ${{ github.ref_name }} (Get-ChildItem dist\*.exe, dist\*.sha256).FullName --generate-notes
+        run: gh release create ${{ github.ref_name }} (Get-ChildItem dist\*.exe, dist\*.sha256).FullName --title "PMKT Alert ${{ github.ref_name }}" --notes-file notes.md

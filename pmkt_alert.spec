@@ -4,7 +4,7 @@ import os
 a = Analysis(
     ["src/pmkt_alert/app.py"],
     pathex=["src"],
-    datas=[("src/pmkt_alert/ui", "pmkt_alert/ui")],
+    datas=[("src/pmkt_alert/ui", "pmkt_alert/ui"), ("CHANGELOG.md", "pmkt_alert")],
     hiddenimports=["webview.platforms.edgechromium", "webview.platforms.winforms", "clr"],
 )
 pyz = PYZ(a.pure)
