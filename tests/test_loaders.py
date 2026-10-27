@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from factory import FACTORY_YES4ALL_ROWS, make_all
+from factory import FACTORY_MAIN_ROWS, make_all
 from pmkt_alert.loaders import ROLES, InputError, detect_inputs, load_inputs
 
 
@@ -36,7 +36,7 @@ def test_ignores_lock_files(tmp_path):
 def test_ads_filtered_and_typed(loaded):
     assert set(loaded.ads["campaign_id"].map(type)) == {str}
     assert loaded.ads["spend"].dtype == float
-    assert len(loaded.ads) == FACTORY_YES4ALL_ROWS  # factory's one BMe and one DSP row are dropped
+    assert len(loaded.ads) == FACTORY_MAIN_ROWS  # factory's one other-brand and one DSP row are dropped
 
 
 def test_raw_spend_is_sp_sb_sd(loaded):
@@ -55,3 +55,11 @@ def test_event_days_and_defind(loaded):
     assert loaded.event_days[date(2026, 10, 2)] == "BAU" and loaded.event_days[date(2026, 10, 3)] == "FALL PRIME"
     assert "Tên File | Data | Sheet | Meaning" in loaded.defind_text
     assert loaded.kpi["month"].dtype.kind == "i"
+
+
+def test_ads_account_defaults_to_most_rows_and_can_be_set(synthetic_dir):
+    roles = detect_inputs([synthetic_dir])
+    assert set(load_inputs(roles).ads.attrs["accounts"]) == {"Main Account", "Other Brand", "DSP_Other"}
+    assert load_inputs(roles).ads.attrs["account"] == "Main Account"
+    other = load_inputs(roles, account="Other Brand")
+    assert len(other.ads) == 1 and other.ads.attrs["account"] == "Other Brand"

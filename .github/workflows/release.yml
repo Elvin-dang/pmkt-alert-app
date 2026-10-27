@@ -1,0 +1,28 @@
+name: release
+on:
+  push:
+    tags: ["v*.*.*"]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+      - name: Stamp version
+        run: python -c "import sys; open('src/pmkt_alert/_version.py','w').write('VERSION = \"%s\"\n' % sys.argv[1].lstrip('v'))" ${{ github.ref_name }}
+      - name: Build exe
+        env:
+          APP_NAME: PMKT-Alert-${{ github.ref_name }}
+        run: pyinstaller --noconfirm pmkt_alert.spec
+      - name: Checksum
+        run: python -c "import hashlib,pathlib; p=next(pathlib.Path('dist').glob('*.exe')); pathlib.Path(str(p)+'.sha256').write_text(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name+'\n')"
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create ${{ github.ref_name }} (Get-ChildItem dist\*.exe, dist\*.sha256).FullName --generate-notes

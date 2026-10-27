@@ -306,6 +306,9 @@ async function loadSettings() {
   $("#st-rules").value = st.rules || "";
   $("#repo").value = set.github_repo || "";
   $("#auto-upd").checked = !!set.auto_update_check;
+  const accounts = (((S.run || {}).inputs || {}).ads || {}).accounts || [];
+  $("#ads-account").innerHTML = '<option value="">Tự chọn (account nhiều dòng nhất)</option>' +
+    [...new Set([...accounts, set.ads_account].filter(Boolean))].map((a) => `<option ${a === set.ads_account ? "selected" : ""}>${esc(a)}</option>`).join("");
   const m = await api.email_map_suggestions();
   if (!m.error) {
     const opts = (cur) => ['<option value="">—</option>', ...m.pics.map((p) => `<option ${p === cur ? "selected" : ""}>${esc(p)}</option>`)].join("");
@@ -424,6 +427,7 @@ function wire() {
   };
   $("#repo").onchange = async (e) => { if (!bad(await api.save_settings({ github_repo: e.target.value.trim() }))) checkUpdate(false); };
   $("#auto-upd").onchange = (e) => api.save_settings({ auto_update_check: e.target.checked });
+  $("#ads-account").onchange = async (e) => { if (!bad(await api.save_settings({ ads_account: e.target.value }))) toast("Đã lưu – chạy lại để áp dụng."); };
   $("#upd-check").onclick = () => checkUpdate(true);
   $("#upd-whatsnew").onclick = $("#upd-whatsnew2").onclick = $("#f-version").onclick = openWn;
   $("#upd-now").onclick = () => { openWn(); install(); };

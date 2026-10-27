@@ -3,8 +3,8 @@ from pathlib import Path
 
 import webview
 
-from .api import Api
-from .store import Store, default_base
+from pmkt_alert.api import Api
+from pmkt_alert.store import Store, default_base
 
 UI = Path(__file__).parent / "ui" / "index.html"
 

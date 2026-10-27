@@ -130,7 +130,8 @@ def _event_days(path: Path) -> dict[date, str]:
     return out
 
 
-def load_inputs(roles: dict[str, Path]) -> Inputs:
+def load_inputs(roles: dict[str, Path], account: str | None = None) -> Inputs:
+    """account: ads_camp account_name to keep; None = the account with the most rows."""
     t = roles["tracker"]
     raw = read_sheet(t, "raw_sso_us")
     _need(raw, ["report_date", "asin", "sku", "ordered_gmv_usd", "ppc_ordered_gmv_usd", "sp_spend", "sb_spend",
@@ -167,7 +168,10 @@ def load_inputs(roles: dict[str, Path]) -> Inputs:
     a = read_sheet(roles["ads"], "ads_camp")
     _need(a, ["report_date", "account_name", "campaign_type", "campaign_id", "campaign_name", "asin",
               "spend_usd", "clicks", "sales_14d", "order_14d"], "ads_camp")
-    a = a[a["account_name"].astype(str).str.strip() == "Yes4All"]
+    names = a["account_name"].astype(str).str.strip()
+    accounts = names.value_counts()
+    chosen = account or (accounts.index[0] if len(accounts) else "")
+    a = a[names == chosen]
     ads = pd.DataFrame({
         "date": _to_date(a["report_date"]), "type": a["campaign_type"].astype(str),
         "campaign_id": a["campaign_id"].map(lambda v: str(int(v)) if isinstance(v, (int, float)) else str(v).strip()),
@@ -175,6 +179,7 @@ def load_inputs(roles: dict[str, Path]) -> Inputs:
         "spend": to_num(a["spend_usd"]), "clicks": to_num(a["clicks"]),
         "sales": to_num(a["sales_14d"]), "orders": to_num(a["order_14d"]),
     }).dropna(subset=["date"]).reset_index(drop=True)
+    ads.attrs["accounts"], ads.attrs["account"] = list(accounts.index), chosen
 
     log = read_sheet(roles["activity"])
     cols = ["id", "level", "type", "action", "from_", "to", "time", "user"]

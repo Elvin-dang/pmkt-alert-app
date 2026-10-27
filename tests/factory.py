@@ -120,7 +120,7 @@ CAMPAIGNS = [  # id, name, type, asins, daily spend, clicks, sales, orders (per 
     ("100000000000003", "Camp Gamma_SD", "SPS_DISPLAY", ["B000000005"], 6, 12, 20, 1),
     ("100000000000004", "Camp Orphan_SP", "SPS_PRODUCTS", ["B000000099"], 2, 4, 0, 0),
 ]
-FACTORY_YES4ALL_ROWS = len(DAYS) * sum(len(c[3]) for c in CAMPAIGNS)
+FACTORY_MAIN_ROWS = len(DAYS) * sum(len(c[3]) for c in CAMPAIGNS)
 FACTORY_LOG_CAMPAIGNS = 3
 
 
@@ -155,7 +155,7 @@ def make_tracker(path: Path) -> Path:
         "KPI": kpi,
         "INELIGIBLE ASIN": [["log_date", "country", "sku", "account_name", "asin", "asin_status", "ad_group_name",
                              "lifecycle", "delivery_status", "delivery_reasons"],
-                            [datetime(2026, 10, 18), "USA", "S003", "Yes4All", "B000000003", None, "g", "Normal",
+                            [datetime(2026, 10, 18), "USA", "S003", "Main Account", "B000000003", None, "g", "Normal",
                              "INELIGIBLE", "CP_INELIGIBLE_ASIN"]],
     })
 
@@ -166,10 +166,10 @@ def make_ads(path: Path) -> Path:
     for d in DAYS:
         for cid, name, typ, asins, spend, clicks, sales, orders in CAMPAIGNS:
             for asin in asins:
-                rows.append([datetime.combine(d, datetime.min.time()), "USA", "Yes4All", typ, cid, name, asin,
+                rows.append([datetime.combine(d, datetime.min.time()), "USA", "Main Account", typ, cid, name, asin,
                              f"{spend:.10f}", f"{clicks:.10f}", "0E-10", f"{sales:.10f}", "0E-10", f"{orders:.10f}"])
-    rows.append([datetime(2026, 10, 19), "USA", "BMe", "SPS_PRODUCTS", "900000000000001", "Other", "B000000001", "9", "1", "1", "1", "1", "1"])
-    rows.append([datetime(2026, 10, 19), "USA", "DSP_SSO_Yes4All_US", "DSP", "900000000000002", "Dsp", "B000000001", "9", "1", "1", "1", "1", "1"])
+    rows.append([datetime(2026, 10, 19), "USA", "Other Brand", "SPS_PRODUCTS", "900000000000001", "Other", "B000000001", "9", "1", "1", "1", "1", "1"])
+    rows.append([datetime(2026, 10, 19), "USA", "DSP_Other", "DSP", "900000000000002", "Dsp", "B000000001", "9", "1", "1", "1", "1", "1"])
     return write_xlsx(path, {"ads_camp": rows})
 
 

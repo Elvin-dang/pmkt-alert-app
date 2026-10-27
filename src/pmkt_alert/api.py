@@ -71,7 +71,7 @@ class Api:
             if not paths:
                 raise ValueError("Chưa chọn file data")
             self._paths = paths
-            self._inputs = load_inputs(detect_inputs([Path(p) for p in paths]))
+            self._inputs = load_inputs(detect_inputs([Path(p) for p in paths]), self._store.get_settings().get("ads_account") or None)
         return self._inputs
 
     def _repo(self) -> str:
@@ -96,7 +96,7 @@ class Api:
     def run(self, paths: list[str], as_of: str | None = None, use_claude: bool = True) -> dict:
         self._progress("load", "running", "Đọc & làm sạch data")
         roles = detect_inputs([Path(p) for p in paths])
-        inputs = load_inputs(roles)
+        inputs = load_inputs(roles, self._store.get_settings().get("ads_account") or None)
         self._inputs, self._paths = inputs, [str(p) for p in paths]
         self._store.save_settings({"last_inputs": {"paths": self._paths}})
         versions = [v for v, _ in self._store.logic_versions()]
@@ -110,7 +110,8 @@ class Api:
         rj = result_to_json(result)
         rj["inputs"] = {
             "raw": {"rows": len(inputs.raw), "last": str(inputs.raw["date"].max())},
-            "ads": {"rows": len(inputs.ads), "last": str(inputs.ads["date"].max())},
+            "ads": {"rows": len(inputs.ads), "last": str(inputs.ads["date"].max()),
+                    "account": inputs.ads.attrs.get("account"), "accounts": inputs.ads.attrs.get("accounts", [])},
             "activity": {"rows": len(inputs.activity), "users": int(inputs.activity["user"].nunique())},
             "files": {r: p.name for r, p in roles.items()},
         }
