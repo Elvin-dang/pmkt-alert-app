@@ -24,3 +24,9 @@ def test_header_row_offset(tmp_path):
 def test_to_num():
     s = pd.Series(["0E-10", "1,234.5", None, "", "#N/A", 3])
     assert to_num(s).tolist() == [0.0, 1234.5, 0.0, 0.0, 0.0, 3.0]
+
+
+def test_rows_wider_than_header_keep_extra_cells(tmp_path):
+    p = write_xlsx(tmp_path / "a.xlsx", {"S": [[None, "README"], [None, "Ver 2", "note"]]})
+    df = read_sheet(p, "S")
+    assert df.iloc[0].tolist() == [None, "Ver 2", "note"]

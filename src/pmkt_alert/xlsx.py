@@ -24,9 +24,10 @@ def read_sheet(path: Path, sheet: str | None = None, header_row: int = 1) -> pd.
         wb.close()
     if not rows:
         return pd.DataFrame()
-    header = [str(h).strip() if h is not None else f"col{i}" for i, h in enumerate(rows[0])]
     body = [r for r in rows[1:] if any(v is not None and v != "" for v in r)]
-    width = len(header)
+    width = max(len(r) for r in [rows[0], *body])
+    head = tuple(rows[0]) + (None,) * (width - len(rows[0]))
+    header = [str(h).strip() if h is not None else f"col{i}" for i, h in enumerate(head)]
     body = [tuple(r[:width]) + (None,) * (width - len(r)) for r in body]
     return pd.DataFrame(body, columns=header)
 
