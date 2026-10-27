@@ -305,3 +305,20 @@ def test_careful_mode_setting_controls_critic(tmp_path, synthetic_paths):
     st.save_settings({"careful_mode": False})
     api.run(paths(synthetic_paths))
     assert "critic" not in calls and calls
+
+
+def test_claude_note_reaches_every_prompt(tmp_path, synthetic_paths):
+    prompts = []
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=lambda p, s: prompts.append(p) or empty_for(s))
+    api.save_settings({"claude_note": "Không bao giờ đề xuất pause camp Brand."})
+    api.run(paths(synthetic_paths))
+    assert prompts and all("Không bao giờ đề xuất pause camp Brand." in p for p in prompts)
+    assert all(p.index("GHI CHÚ") < 200 for p in prompts)
+
+
+def test_memory_info_and_prune(tmp_path, synthetic_paths):
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("x")))
+    api.run(paths(synthetic_paths))
+    info = api.memory_info()
+    assert info["runs"] == 1 and info["limit_bytes"] == 1024 ** 3 and info["oldest"]["date"]
+    assert api.prune_memory()["deleted"] == []

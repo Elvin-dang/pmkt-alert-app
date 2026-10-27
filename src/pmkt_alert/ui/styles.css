@@ -191,3 +191,5 @@ td.acts .fb+.fb{margin-left:4px}
 .review-item{padding:8px 0;border-bottom:1px dashed var(--border);font-size:13px}
 .review-item:last-child{border:0}
 .g2-1{grid-template-columns:3fr 2fr}
+
+.sev{white-space:nowrap}

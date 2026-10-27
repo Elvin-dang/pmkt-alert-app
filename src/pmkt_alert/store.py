@@ -14,7 +14,9 @@ from .logic import version_from_name
 DEFAULT_STYLE = {"language": "vi_en_terms", "pronoun": "em_anhchi", "length": "short", "tone": "friendly_direct",
                  "emoji": "low", "samples": [], "rules": "", "pic_address": {}}
 DEFAULT_SETTINGS = {"auto_update_check": True, "email_map": {}, "last_inputs": {}, "active_logic": None,
-                    "github_repo": "", "ads_account": "", "careful_mode": True}
+                    "github_repo": "", "ads_account": "", "careful_mode": True,
+                    "memory_limit_mb": 1024, "auto_prune": True, "claude_note": ""}
+MAX_MEMORY_BYTES = 1024 ** 3  # 1 GB hard cap
 
 
 def default_base() -> Path:
@@ -72,7 +74,48 @@ class Store:
         while (self.base / "runs" / f"{run_id}.json").exists():
             run_id += "b"
         self._write(f"runs/{run_id}.json", {"run_id": run_id, "result": result_json, "ai": ai_json})
+        if self.get_settings().get("auto_prune", True):
+            self.prune()
         return run_id
+
+    # ------------------------------------------------------------- memory size
+    def _limit_bytes(self) -> int:
+        mb = float(self.get_settings().get("memory_limit_mb") or 1024)
+        return int(min(mb * 1024 * 1024, MAX_MEMORY_BYTES))
+
+    def _run_files(self) -> list[Path]:
+        return sorted((self.base / "runs").glob("*.json"), key=lambda p: (p.stat().st_mtime, p.name))
+
+    def usage(self) -> dict:
+        kinds = {"runs": 0, "logic": 0, "lessons": 0, "feedback": 0, "proposals": 0, "other": 0}
+        for p in self.base.rglob("*"):
+            if not p.is_file():
+                continue
+            rel = p.relative_to(self.base).parts
+            kind = rel[0] if rel[0] in ("runs", "logic") else p.stem if p.stem in kinds else "other"
+            kinds[kind] += p.stat().st_size
+        runs = self._run_files()
+        oldest = None
+        if runs:
+            o = runs[0]
+            oldest = {"run_id": o.stem, "date": datetime.fromtimestamp(o.stat().st_mtime).isoformat(timespec="seconds"),
+                      "as_of": ((self._read(f"runs/{o.name}", {}).get("result") or {}).get("as_of"))}
+        return {"bytes": sum(kinds.values()), "limit_bytes": self._limit_bytes(), "by_kind": kinds, "runs": len(runs),
+                "oldest": oldest, "auto_prune": bool(self.get_settings().get("auto_prune", True))}
+
+    @_locked
+    def prune(self, limit_bytes: int | None = None) -> list[str]:
+        """Delete the oldest runs until total size ≤ limit. Never the newest run; never lessons, logic, style, note."""
+        limit = self._limit_bytes() if limit_bytes is None else limit_bytes
+        total = sum(p.stat().st_size for p in self.base.rglob("*") if p.is_file())
+        deleted = []
+        for p in self._run_files()[:-1]:
+            if total <= limit:
+                break
+            total -= p.stat().st_size
+            p.unlink()
+            deleted.append(p.stem)
+        return deleted
 
     def load_run(self, run_id: str) -> dict:
         return self._read(f"runs/{run_id}.json", {})

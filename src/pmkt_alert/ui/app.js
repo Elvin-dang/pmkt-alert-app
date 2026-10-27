@@ -443,6 +443,11 @@ async function loadSettings() {
   $("#st-samples").value = (st.samples || []).join("\n\n");
   $("#st-rules").value = st.rules || "";
   $("#repo").value = set.github_repo || "";
+  $("#claude-note").value = set.claude_note || "";
+  $("#note-count").textContent = `${(set.claude_note || "").length}/4000 ký tự`;
+  $("#mem-limit").value = set.memory_limit_mb ?? 1024;
+  $("#mem-auto").checked = set.auto_prune !== false;
+  loadMemory();
   $("#auto-upd").checked = !!set.auto_update_check;
   const accounts = (((S.run || {}).inputs || {}).ads || {}).accounts || [];
   $("#ads-account").innerHTML = '<option value="">Tự chọn (account nhiều dòng nhất)</option>' +
@@ -454,6 +459,24 @@ async function loadSettings() {
   }
   renderVersion();
 }
+function bytes(n) {
+  if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(2) + " GB";
+  if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(1) + " MB";
+  return Math.max(1, Math.round(n / 1024)) + " KB";
+}
+const KIND = { runs: "Lịch sử chạy", logic: "Phiên bản logic", lessons: "Bài học", feedback: "Góp ý", proposals: "Đề xuất", other: "Khác" };
+function renderMemory(m) {
+  const share = Math.min(100, (m.bytes / m.limit_bytes) * 100);
+  const color = share > 90 ? "var(--high)" : share > 70 ? "var(--med)" : "var(--primary)";
+  const o = m.oldest;
+  $("#mem-info").innerHTML = `
+    <div style="display:flex;justify-content:space-between;font-size:13px"><b class="num">${bytes(m.bytes)} / ${bytes(m.limit_bytes)}</b><span class="muted num">${share.toFixed(share < 1 ? 2 : 0)}%</span></div>
+    <div class="bar" style="height:10px;margin:6px 0" role="progressbar" aria-valuenow="${share.toFixed(0)}" aria-valuemin="0" aria-valuemax="100"><span style="width:${Math.max(share, 0.5)}%;background:${color}"></span></div>
+    <div class="muted" style="font-size:12px">${Object.entries(m.by_kind).filter(([, v]) => v).map(([k, v]) => `${KIND[k]}: <span class="num">${bytes(v)}</span>`).join(" · ")}</div>
+    <div class="check" style="margin-top:6px"><span class="sev INFO" style="white-space:nowrap">CŨ NHẤT</span><div>${o ? `Lưu ngày <b class="num">${esc(o.date.slice(0, 10).split("-").reverse().join("/"))}</b>${o.as_of ? ` (data đến ${ddmm(o.as_of)})` : ""} · lần chạy ${esc(o.run_id)} · đang giữ ${m.runs} lần chạy` : "Chưa có lần chạy nào"}</div></div>
+    ${share > 100 && !m.auto_prune ? '<div class="warnbar">Đã vượt giới hạn – bật “Tự ghi đè” hoặc bấm “Dọn ngay”.</div>' : ""}`;
+}
+async function loadMemory() { const m = await api.memory_info(); if (!bad(m)) renderMemory(m); }
 async function saveStyle() {
   const emoji = ($$("#st-emoji button").find((b) => b.getAttribute("aria-pressed") === "true") || {}).dataset?.v || "low";
   const r = await api.save_style({
@@ -583,6 +606,18 @@ function wire() {
   $("#repo").onchange = async (e) => { if (!bad(await api.save_settings({ github_repo: e.target.value.trim() }))) checkUpdate(false); };
   $("#auto-upd").onchange = (e) => api.save_settings({ auto_update_check: e.target.checked });
   $("#careful").onchange = (e) => api.save_settings({ careful_mode: e.target.checked });
+  $("#claude-note").oninput = (e) => ($("#note-count").textContent = `${e.target.value.length}/4000 ký tự`);
+  $("#note-save").onclick = async () => { if (!bad(await api.save_settings({ claude_note: $("#claude-note").value.trim() }))) toast("Đã lưu ghi chú – áp dụng từ lần chạy tới."); };
+  $("#mem-save").onclick = async () => {
+    const mb = Math.min(1024, Math.max(1, Number($("#mem-limit").value) || 1024));
+    $("#mem-limit").value = mb;
+    if (!bad(await api.save_settings({ memory_limit_mb: mb, auto_prune: $("#mem-auto").checked }))) { toast("Đã lưu cài đặt bộ nhớ."); loadMemory(); }
+  };
+  $("#mem-prune").onclick = async () => {
+    if (!confirm("Xoá các lần chạy cũ nhất cho tới khi dưới giới hạn?")) return;
+    const r = await api.prune_memory();
+    if (!bad(r)) { toast(r.deleted.length ? `Đã xoá ${r.deleted.length} lần chạy cũ.` : "Chưa vượt giới hạn – không cần xoá."); renderMemory(r); }
+  };
   $("#ads-account").onchange = async (e) => { if (!bad(await api.save_settings({ ads_account: e.target.value }))) toast("Đã lưu – chạy lại để áp dụng."); };
   $("#upd-check").onclick = () => checkUpdate(true);
   $("#upd-whatsnew").onclick = $("#upd-whatsnew2").onclick = $("#f-version").onclick = openWn;

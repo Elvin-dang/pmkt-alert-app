@@ -143,6 +143,26 @@
     </div>
   </div>
 
+  <div class="grid g2" style="margin-top:12px">
+    <div class="card">
+      <h2>Ghi chú cho Claude</h2>
+      <p class="muted" style="font-size:12px;margin-top:0">Claude đọc ghi chú này ở <b>mọi</b> lần chạy (phân tích, biên tập, rà soát logic, nhận xét đội, viết lại tin nhắn) và ưu tiên nó hơn các gợi ý khác.</p>
+      <textarea id="claude-note" style="min-height:150px" maxlength="4000" placeholder="VD: Camp Brand là camp phòng thủ – không bao giờ đề xuất pause. Tháng này ưu tiên GMV hơn TACoS."></textarea>
+      <div style="display:flex;gap:8px;align-items:center;margin-top:8px"><span class="muted" id="note-count" style="font-size:12px"></span><span style="flex:1"></span><button class="btn primary" id="note-save">Lưu ghi chú</button></div>
+    </div>
+    <div class="card">
+      <h2>Bộ nhớ của app</h2>
+      <p class="muted" style="font-size:12px;margin-top:0">Lịch sử chạy, bài học, góp ý, đề xuất và các phiên bản logic – app dùng để chạy tốt hơn lần sau.</p>
+      <div id="mem-info"><div class="muted" style="font-size:13px">Đang đọc…</div></div>
+      <div class="grid g2" style="margin-top:10px;align-items:end">
+        <div><label for="mem-limit">Giới hạn (MB, tối đa 1024)</label><input type="text" inputmode="numeric" id="mem-limit"></div>
+        <label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:500;color:var(--fg)"><input type="checkbox" id="mem-auto"> Tự ghi đè lần chạy cũ nhất khi vượt giới hạn</label>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="mem-save">Lưu</button><button class="btn" id="mem-prune">Dọn ngay</button></div>
+      <p class="muted" style="font-size:12px;margin-bottom:0">Khi dọn chỉ xoá các <b>lần chạy cũ nhất</b>; không bao giờ xoá lần chạy mới nhất, bài học, phiên bản logic, văn phong hay ghi chú.</p>
+    </div>
+  </div>
+
   <div class="card" style="margin-top:12px">
     <h2>Văn phong của bạn</h2>
     <p class="muted" style="font-size:12px;margin-top:0">Claude viết Insight, To-do và tin nhắn theo văn phong này. Dán vài tin nhắn thật của bạn – Claude học giọng văn từ đó.</p>

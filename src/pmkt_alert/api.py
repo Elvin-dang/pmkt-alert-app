@@ -42,13 +42,22 @@ def safe(fn):
 class Api:
     def __init__(self, store: Store, ask_fn=ask, status_fn=check_status, release_fn=latest_release,
                  recent_fn=recent_releases):
-        self._store, self._ask, self._status = store, ask_fn, status_fn
+        self._store, self._status = store, status_fn
+        self._ask = self._with_note(ask_fn)
         self._release, self._recent = release_fn, recent_fn
         self._window = None
         self._inputs = None
         self._paths: list[str] = []
 
     # ------------------------------------------------------------- helpers
+    def _with_note(self, ask_fn):
+        """Every Claude request starts with the user's note from Settings."""
+        def ask_with_note(prompt: str, schema: dict) -> dict:
+            note = (self._store.get_settings().get("claude_note") or "").strip()
+            prefix = f"GHI CHÚ CỦA NGƯỜI DÙNG (bắt buộc tuân theo, ưu tiên hơn mọi gợi ý khác):\n{note}\n\n" if note else ""
+            return ask_fn(prefix + prompt, schema)
+        return ask_with_note
+
     def _log(self, text: str) -> None:
         with open(self._store.base / "error.log", "a", encoding="utf-8") as f:
             f.write(f"--- {datetime.now().isoformat()}\n{text}\n")
@@ -368,6 +377,15 @@ class Api:
         ai["per_pic"].setdefault(pic, {"insights": [], "todos": [], "dropped": 0})["slack"] = out["slack"]
         self._store.update_run_ai(run["run_id"], ai)
         return {"slack": out["slack"], "pic": pic}
+
+    @safe
+    def memory_info(self) -> dict:
+        return self._store.usage()
+
+    @safe
+    def prune_memory(self) -> dict:
+        deleted = self._store.prune()
+        return {"deleted": deleted, **self._store.usage()}
 
     @safe
     def get_settings(self) -> dict:
