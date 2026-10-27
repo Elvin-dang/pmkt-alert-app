@@ -79,6 +79,14 @@ class Api:
 
     # ------------------------------------------------------------- run
     @safe
+    def pick_folder(self) -> dict:
+        if self._window is None:
+            raise RuntimeError("Chưa mở cửa sổ app")
+        import webview
+        picked = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        return {"paths": list(picked) if picked else []}
+
+    @safe
     def detect(self, paths: list[str]) -> dict:
         roles = detect_inputs([Path(p) for p in paths])
         return {"roles": {r: {"path": str(p), "name": p.name, "size_mb": round(p.stat().st_size / 1e6, 1)}

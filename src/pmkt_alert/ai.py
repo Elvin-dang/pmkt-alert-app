@@ -31,6 +31,13 @@ def pic_rows(result_json: dict, pic: str) -> dict:
             "all": {r["unit_id"]: r for r in pl + camp}}
 
 
+def _ask_twice(ask_fn, prompt: str, schema: dict) -> dict:
+    try:
+        return ask_fn(prompt, schema)
+    except ClaudeError:
+        return ask_fn(prompt, schema)
+
+
 def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, defind_text: str,
              ineligible: list[dict] | None = None, ask_fn=ask) -> dict:
     lessons = [x["text"] for x in store.lessons()]
@@ -46,11 +53,13 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
         if not any(d[k] for k in ("pl_high", "pl_med", "pl_trend_review", "camp_high", "camp_med", "camp_followup")):
             return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0}
         inel = [x for x in (ineligible or []) if x.get("pic") == pic]
+        prompt = insights_prompt(pic, rows, d, logic, lessons, style, defind_text, inel)
         try:
-            out = ask_fn(insights_prompt(pic, rows, d, logic, lessons, style, defind_text, inel), INSIGHTS_SCHEMA)
+            out = _ask_twice(ask_fn, prompt, INSIGHTS_SCHEMA)
         except ClaudeError as e:
             errors.append(str(e))
             return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0, "error": str(e)}
+        out.setdefault("slack", "")
         ins, ins_drop = filter_grounded(out["insights"], rows["all"], ("text",), implicit)
         todos, todo_drop = filter_grounded(out["todos"], rows["all"], ("title", "detail"), implicit)
         slack_ok = grounded(out["slack"], list(rows["all"].values()) + implicit)
@@ -59,7 +68,7 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
 
     def review() -> list[dict]:
         try:
-            out = ask_fn(review_prompt(result_json, logic, event_days, store.list_feedback()), REVIEW_SCHEMA)
+            out = _ask_twice(ask_fn, review_prompt(result_json, logic, event_days, store.list_feedback()), REVIEW_SCHEMA)
         except ClaudeError as e:
             errors.append(str(e))
             return []

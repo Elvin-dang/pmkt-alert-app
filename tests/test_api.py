@@ -116,3 +116,7 @@ def test_all_public_methods_never_raise(tmp_path):
         out = getattr(api, name)()
         assert isinstance(out, dict), name
     json.dumps(api.history())
+
+
+def test_pick_folder_without_window(tmp_path):
+    assert "error" in Api(Store(tmp_path)).pick_folder()

@@ -68,3 +68,24 @@ def test_fallback_slack():
     d = {"pic": "PIC A", "pl_high": 7, "pl_med": 5, "pl_trend_review": 4, "camp_high": 5, "camp_med": 27, "camp_followup": 4, "excess_new": 615.72}
     assert fallback_slack(d, "2026-10-19") == ("Chào PIC A, báo cáo ngày 19/10 (L7D): 7 PL HIGH, 5 PL MED, 4 PL có trend cần review; "
                                               "32 campaign cần action mới (dư chi ~$616), 4 campaign đã action đang follow-up.")
+
+
+def test_missing_slack_uses_fallback(result_json, logic, tmp_path):
+    g = generate(result_json, logic, Store(tmp_path), {}, "",
+                 ask_fn=lambda p, s: {"findings": []} if _is(s, "findings") else {"insights": [], "todos": []})
+    assert g["claude_ok"] is True and g["per_pic"]["PIC A"]["slack"].startswith("Chào PIC A")
+
+
+def test_retries_once_on_bad_output(result_json, logic, tmp_path):
+    calls = {"n": 0}
+
+    def ask_fn(p, s):
+        if _is(s, "findings"):
+            return {"findings": []}
+        if '"PIC A"' in p:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ClaudeError("Kết quả Claude sai cấu trúc")
+        return {"insights": [], "todos": [], "slack": "ok"}
+    g = generate(result_json, logic, Store(tmp_path), {}, "", ask_fn=ask_fn)
+    assert calls["n"] == 2 and g["claude_ok"] is True and g["per_pic"]["PIC A"]["slack"] == "ok"

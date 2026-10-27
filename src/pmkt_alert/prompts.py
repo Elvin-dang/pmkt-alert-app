@@ -6,7 +6,7 @@ from .logic import PARAM_LABELS, Logic
 
 _STR_LIST = {"type": "array", "items": {"type": "string"}}
 INSIGHTS_SCHEMA = {
-    "type": "object", "required": ["insights", "todos", "slack"],
+    "type": "object", "required": ["insights", "todos"],
     "properties": {
         "insights": {"type": "array", "items": {"type": "object", "required": ["text", "refs"],
                                                  "properties": {"text": {"type": "string"}, "refs": _STR_LIST}}},
@@ -128,6 +128,7 @@ Ví dụ lỗ hổng: ngưỡng bắt quá nhiều/quá ít, nhãn không phân 
 
 Chỉ trả về MỘT object JSON đúng schema. Văn phong trung tính, chính xác, tiếng Việt.
 - kind = "param" khi chỉ cần đổi một tham số có sẵn; khi đó param_key PHẢI là một key trong danh sách bên dưới và proposed_value là giá trị mới.
+- Nếu một phát hiện có thể giảm bớt bằng cách chỉnh tham số có sẵn (kể cả chưa giải quyết triệt để), ưu tiên kind = "param" để người dùng backtest được.
 - kind = "rule" khi cần thêm/sửa cấu trúc rule.
 - Tối đa 6 phát hiện, quan trọng nhất trước.
 
