@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmkt-alert"
+dynamic = ["version"]
+requires-python = ">=3.12"
+dependencies = ["pandas>=2.2", "openpyxl>=3.1", "pywebview>=5.0", "jsonschema>=4.20"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyinstaller>=6"]
+
+[project.scripts]
+pmkt-alert = "pmkt_alert.app:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "pmkt_alert._version.VERSION"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pmkt_alert = ["ui/*", "ui/fonts/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]
