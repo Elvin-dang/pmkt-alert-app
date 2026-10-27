@@ -9,7 +9,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 DEFAULT_REPO = "Elvin-dang/pmkt-alert-app"
 
@@ -89,10 +89,17 @@ def download_verified(rel: Release, dest_dir: Path, fetch=urllib.request.urlopen
     return final
 
 
+EXE_NAME = "PMKT-Alert.exe"
+
+
 def swap_script(new_exe: Path, current_exe: Path, pid: int) -> str:
     """Batch file (UTF-8, chcp 65001 for non-ASCII profile paths). Waits for the app to exit, retries the
-    move while the exe is still locked, and always relaunches – the old exe if the swap fails."""
+    move while the exe is still locked, and always relaunches – the old exe if the swap fails.
+    The updated app is always named PMKT-Alert.exe; an old versioned file is removed after a successful swap."""
     pause = "ping -n 2 127.0.0.1 >nul"  # `timeout` fails without a console
+    current = PureWindowsPath(str(current_exe))  # the script only ever runs on Windows
+    target = current.with_name(EXE_NAME)
+    cleanup = [f'del "{current}" >nul 2>&1'] if current.name.lower() != EXE_NAME.lower() else []
     return "\r\n".join([
         "@echo off",
         "chcp 65001 >nul",
@@ -101,18 +108,19 @@ def swap_script(new_exe: Path, current_exe: Path, pid: int) -> str:
         f"if not errorlevel 1 ({pause} & goto wait)",
         "set /a tries=0",
         ":move",
-        f'move /y "{new_exe}" "{current_exe}" >nul',
+        f'move /y "{new_exe}" "{target}" >nul',
         "if not errorlevel 1 goto ok",
         "set /a tries+=1",
         "if %tries% geq 30 goto fail",
         pause,
         "goto move",
         ":ok",
-        f'start "" "{current_exe}"',
+        *cleanup,
+        f'start "" "{target}"',
         'del "%~f0"',
         "exit /b 0",
         ":fail",
-        f'start "" "{current_exe}"',
+        f'start "" "{current}"',
         'del "%~f0"',
         "exit /b 1",
     ])

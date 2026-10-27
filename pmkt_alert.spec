@@ -1,4 +1,4 @@
-# PyInstaller spec – one-file windowed build. CI sets APP_NAME=PMKT-Alert-vX.Y.Z.
+# PyInstaller spec – one-file windowed build → dist/PMKT-Alert.exe (version lives inside the app, not the name).
 import os
 
 a = Analysis(
@@ -12,5 +12,6 @@ exe = EXE(
     pyz, a.scripts, a.binaries, a.datas,
     name=os.environ.get("APP_NAME", "PMKT-Alert"),
     console=False,
+    icon="assets/icon.ico",
     upx=False,
 )

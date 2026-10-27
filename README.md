@@ -4,7 +4,7 @@ Windows desktop app for an Amazon performance-marketing team. It reads the team'
 
 ## Install
 
-1. Download `PMKT-Alert-vX.Y.Z.exe` from [Releases](../../releases).
+1. Download `PMKT-Alert.exe` from the latest [Release](../../releases/latest) (the version is shown inside the app).
 2. Optional, for AI features: install Claude Code and log in once (`claude` in a terminal).
 3. Run the exe, pick the folder with the input files, press **Chạy**.
 

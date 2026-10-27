@@ -81,3 +81,12 @@ def test_swap_script_robust():
     assert "set /a tries" in s
     fail = s.index(":fail")
     assert 'start "" "C:\\a\\PMKT-Alert.exe"' in s[fail:]  # old app relaunched if the swap fails
+
+
+def test_swap_renames_versioned_exe_to_plain_name():
+    s = swap_script(Path(r"C:\t\new.exe"), Path(r"C:\Users\a\Downloads\PMKT-Alert-v0.1.2.exe"), 7)
+    assert 'move /y "C:\\t\\new.exe" "C:\\Users\\a\\Downloads\\PMKT-Alert.exe"' in s
+    ok = s[s.index(":ok"):s.index(":fail")]
+    assert 'del "C:\\Users\\a\\Downloads\\PMKT-Alert-v0.1.2.exe"' in ok and 'start "" "C:\\Users\\a\\Downloads\\PMKT-Alert.exe"' in ok
+    fail = s[s.index(":fail"):]
+    assert 'start "" "C:\\Users\\a\\Downloads\\PMKT-Alert-v0.1.2.exe"' in fail  # old one still works

@@ -35,7 +35,7 @@ def safe(fn):
             return {"error": str(e)}
         except Exception as e:  # never let a traceback reach the UI
             self._log(traceback.format_exc())
-            return {"error": f"Lỗi không mong đợi: {e}"}
+            return {"error": f"Lỗi không mong đợi: {e} (chi tiết: {self._store.base / 'error.log'})"}
     return wrapper
 
 
@@ -145,9 +145,13 @@ class Api:
         inputs = load_inputs(roles, self._store.get_settings().get("ads_account") or None)
         self._inputs, self._paths = inputs, [str(p) for p in paths]
         self._store.save_settings({"last_inputs": {"paths": self._paths}})
-        versions = [v for v, _ in self._store.logic_versions()]
-        if not versions or version_from_name(roles["logic"].name) > max(versions):
-            self._store.import_logic(roles["logic"])
+        # The picked logic file is used unless an identical copy is already stored (then the active
+        # version stays, e.g. a Ver N+1 the app created from approved proposals).
+        picked = roles["logic"]
+        same = self._store.base / "logic" / picked.name
+        if not (same.exists() and same.read_bytes() == picked.read_bytes()):
+            load_logic(picked)  # validate before importing: a broken file must not become active
+            self._store.import_logic(picked)
         logic = self._logic()
         self._progress("load", "done", f"{len(inputs.raw):,} dòng raw · {len(inputs.ads):,} dòng ads_camp")
 

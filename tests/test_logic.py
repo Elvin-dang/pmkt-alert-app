@@ -67,3 +67,42 @@ def test_logic_records_cell_refs(tmp_path):
     from openpyxl import load_workbook
     ws = load_workbook(lg.path)["Config"]
     assert ws[lg.cells["camp_cut"].split("!")[1]].value == 1.15
+
+
+def _set_config(path, label_prefix, value):
+    import openpyxl
+    wb = openpyxl.load_workbook(path)
+    ws = wb["Config"]
+    for row in ws.iter_rows(min_col=2, max_col=3):
+        if row[0].value and str(row[0].value).startswith(label_prefix):
+            row[1].value = value
+    wb.save(path)
+
+
+def test_blank_threshold_gives_clear_error(tmp_path):
+    p = make_logic(tmp_path / "Alert_Logic_System_Team_v3.xlsx")
+    _set_config(p, "CUT/OPTIMIZE nếu ACoS camp", None)
+    with pytest.raises(LogicError, match=r"camp_cut.*Config!C\d+.*trống"):
+        load_logic(p)
+
+
+def test_formula_without_saved_value_gives_clear_error(tmp_path):
+    p = make_logic(tmp_path / "x.xlsx")
+    _set_config(p, "Sàn click tối thiểu", "=10+5")  # written by a tool: no cached result
+    with pytest.raises(LogicError, match=r"min_clicks.*công thức.*Excel"):
+        load_logic(p)
+
+
+def test_threshold_text_formats_accepted(tmp_path):
+    p = make_logic(tmp_path / "x.xlsx")
+    _set_config(p, "CUT/OPTIMIZE nếu ACoS camp", "1,25")
+    _set_config(p, "TACoS vượt target nếu", "110%")
+    lg = load_logic(p)
+    assert lg.params["camp_cut"] == 1.25 and lg.params["tacos_over"] == 1.1
+
+
+def test_version_from_various_names():
+    assert version_from_name("Alert_Logic_System_Team_v3.xlsx") == 3
+    assert version_from_name("Alert_Logic_Ver 12.xlsx") == 12
+    assert version_from_name("logic v 4 final.xlsx") == 4
+    assert version_from_name("Alert_Logic.xlsx") == 1

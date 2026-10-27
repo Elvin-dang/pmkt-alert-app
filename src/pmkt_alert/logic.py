@@ -48,8 +48,27 @@ class Logic:
 
 
 def version_from_name(name: str) -> int:
-    m = re.search(r"Ver\s*(\d+)", name, re.IGNORECASE)
+    """'Alert_Logic_Ver 12' → 12, '…_Team_v3' → 3, no version → 1."""
+    m = re.search(r"(?:^|[^a-z])v(?:er)?\s*(\d+)", Path(name).stem, re.IGNORECASE)
     return int(m.group(1)) if m else 1
+
+
+def _number(value, key: str, cell: str, formula) -> float:
+    """Config value → float. '1,25' and '110%' are accepted; blanks and unsaved formulas get a clear error."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if value is None or str(value).strip() == "":
+        if isinstance(formula, str) and formula.startswith("="):
+            raise LogicError(f"Tham số {key} ({cell}) là công thức chưa có giá trị đã tính. "
+                             "Mở file bằng Excel, bấm Lưu rồi chọn lại file.")
+        raise LogicError(f"Tham số {key} ({cell}) đang trống – điền giá trị trong file Alert_Logic.")
+    text = str(value).strip().replace(" ", "")
+    pct = text.endswith("%")
+    text = text.rstrip("%").replace(",", ".")
+    try:
+        return float(text) / (100 if pct else 1)
+    except ValueError:
+        raise LogicError(f"Tham số {key} ({cell}) không phải số: '{value}'") from None
 
 
 def _key_for(section: str, label: str) -> str | None:
@@ -82,11 +101,15 @@ def _scan_config(ws):
 def load_logic(path: Path) -> Logic:
     path = Path(path)
     wb = openpyxl.load_workbook(path, data_only=True)
+    formulas = None  # loaded only if a value is missing, to tell blank from an unsaved formula
     try:
         params, k_by_type, cells = {}, {}, {}
         for row, kind, key, value in _scan_config(wb["Config"]):
-            (params if kind == "param" else k_by_type)[key] = float(value)
             cells[key] = f"Config!C{row}"
+            if value is None and formulas is None:
+                formulas = openpyxl.load_workbook(path)["Config"]
+            raw = formulas.cell(row=row, column=3).value if formulas is not None else None
+            (params if kind == "param" else k_by_type)[key] = _number(value, key, cells[key], raw)
         missing = [k for k in PARAM_LABELS if k not in params]
         if missing:
             raise LogicError("Thiếu tham số: " + ", ".join(missing))

@@ -322,3 +322,28 @@ def test_memory_info_and_prune(tmp_path, synthetic_paths):
     info = api.memory_info()
     assert info["runs"] == 1 and info["limit_bytes"] == 1024 ** 3 and info["oldest"]["date"]
     assert api.prune_memory()["deleted"] == []
+
+
+def test_picked_logic_file_is_used_even_with_other_name(tmp_path, synthetic_paths):
+    import shutil
+    from factory import make_logic
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=always_raise(ClaudeError("x")))
+    first = api.run(paths(synthetic_paths))
+    assert first["result"]["logic_version"] == 1
+    d = tmp_path / "other"
+    d.mkdir()
+    for p in synthetic_paths:
+        if "Alert_Logic" not in p.name:
+            shutil.copy(p, d / p.name)
+    team = make_logic(d / "Alert_Logic_System_Team_v3.xlsx")
+    import openpyxl
+    wb = openpyxl.load_workbook(team)
+    for row in wb["Config"].iter_rows(min_col=2, max_col=3):
+        if row[0].value and str(row[0].value).startswith("Sàn click tối thiểu"):
+            row[1].value = 99
+    wb.save(team)
+    out = api.run([str(d)])
+    assert out["result"]["logic_version"] == 3
+    assert all(c["min_clicks"] >= 99 for c in out["result"]["camp"])
+    again = api.run([str(d)])  # same file again: no duplicate import, still v3
+    assert again["result"]["logic_version"] == 3 and len(api.history()["logic_versions"]) == 2
