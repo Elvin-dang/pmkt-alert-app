@@ -168,3 +168,17 @@ def test_login_command_opens_terminal(monkeypatch):
     monkeypatch.setattr(claude_mod.sys, "platform", "win32")
     cmd = claude_mod.login_command(r"C:\u\.local\bin\claude.exe")
     assert cmd[:3] == ["cmd", "/c", "start"] and cmd[-1] == r"C:\u\.local\bin\claude.exe" and "/k" in cmd
+
+
+def test_numbers_after_a_word_are_checked():
+    rows = [{"pct_spend": 2.16, "excess": 38.43}]
+    assert grounded("Spend 216% và dư chi 38.43", rows)
+    assert not grounded("Spend 999%", rows)
+    assert not grounded("tiêu 2602 rồi", rows)
+    assert grounded("spend x2, L7D, T10", rows)  # glued to a word: not a quoted figure
+
+
+def test_grounded_accepts_numeric_string_fields():
+    rows = [{"campaign_id": "212121537347072", "excess": 38.43}]
+    assert grounded("camp 212121537347072 dư chi $38.43", rows)
+    assert not grounded("camp 999999999999999", rows)

@@ -10,7 +10,7 @@ from . import __version__
 from .ai import generate, offline, pic_rows
 from .aggregate import asin_map
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
-from .claude import ClaudeError, ask, check_status, open_login
+from .claude import ClaudeError, ask, check_status, grounded, open_login
 from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
 from .export import export_pic
@@ -278,6 +278,29 @@ class Api:
         rows = pic_rows(run["result"], d["pic"])
         out = self._ask(style_prompt(self._store.get_style(), d, {"pl": rows["pl"][:5], "camp": rows["camp"][:8]}), STYLE_SCHEMA)
         return {"slack": out["slack"], "pic": d["pic"]}
+
+    @safe
+    def save_pic_address(self, pic: str, d: dict) -> dict:
+        self._store.set_pic_address(pic, d)
+        return self._store.get_style()
+
+    @safe
+    def rewrite_message(self, pic: str, run_id: str | None = None) -> dict:
+        run = self._store.load_run(run_id) if run_id else self._latest()
+        if not run:
+            raise ValueError("Không tìm thấy lần chạy")
+        d = next((x for x in run["result"]["digest"] if x["pic"] == pic), None)
+        if d is None:
+            raise ValueError(f"Không có PIC {pic} trong lần chạy này")
+        rows = pic_rows(run["result"], pic)
+        out = self._ask(style_prompt(self._store.get_style(), d, {"pl": rows["pl"], "camp": rows["camp"]}), STYLE_SCHEMA)
+        context = {"time_gone": Windows(date.fromisoformat(run["result"]["as_of"])).time_gone}
+        if not grounded(out["slack"], list(rows["all"].values()) + [d, context]):
+            raise ValueError("Claude viết số không khớp dữ liệu – đã giữ tin nhắn cũ, thử lại nhé")
+        ai = run.get("ai") or {"claude_ok": True, "error": None, "review": [], "per_pic": {}}
+        ai["per_pic"].setdefault(pic, {"insights": [], "todos": [], "dropped": 0})["slack"] = out["slack"]
+        self._store.update_run_ai(run["run_id"], ai)
+        return {"slack": out["slack"], "pic": pic}
 
     @safe
     def get_settings(self) -> dict:

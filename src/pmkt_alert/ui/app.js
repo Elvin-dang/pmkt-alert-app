@@ -197,7 +197,7 @@ function renderResults() {
       <div class="card kpi"><div class="lbl">Excess spend cần action</div><div class="val num">${money(d.excess_new)}</div></div>
     </div>
     <div class="tabs" role="tablist">
-      ${[["t-alerts", "Cảnh báo"], ["t-todos", `To-do (${todos.length})`], ["t-insights", "Insight & Slack"], ["t-data", `Data ⚠ (${issues.length})`]]
+      ${[["t-alerts", "Cảnh báo"], ["t-todos", `To-do (${todos.length})`], ["t-insights", "Insight"], ["t-data", `Data ⚠ (${issues.length})`]]
         .map(([id, label]) => `<button role="tab" aria-selected="${id === tab}" data-tab="${id}">${label}</button>`).join("")}
       <span style="flex:1"></span>
       <label style="display:flex;gap:6px;align-items:center;margin:0;font-weight:500;color:var(--fg)"><input type="checkbox" id="show-low" ${S.showLow ? "checked" : ""}> Hiện LOW</label>
@@ -253,15 +253,40 @@ function insightsHtml(mine) {
     : mine.insights.length ? mine.insights.map((i) => `<div class="insight"><span class="ai"><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Claude</span>
       <div>${esc(i.text)}</div><div class="src">Nguồn: ${esc((i.refs || []).join(", "))} ${fbBtn((i.refs || [])[0] || "insight", "Insight: " + i.text.slice(0, 60))}</div></div>`).join("")
     : '<div class="empty">Không có insight.</div>';
-  return `${list}<h2 style="margin-top:14px">Tin nhắn Slack</h2>
-    <textarea class="slack-edit" id="slack-text" aria-label="Tin nhắn Slack">${esc(mine ? mine.slack : "")}</textarea>`;
+  const addr = ((S.style || {}).pic_address || {})[S.pic] || {};
+  const given = String(S.pic || "").trim().split(/\s+/).pop() || "";
+  const opt = (list, cur) => list.map(([v, label]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(label)}</option>`).join("");
+  return `${list}<h2 style="margin-top:14px">Tin nhắn</h2>
+    <div class="grid" style="grid-template-columns:150px 170px 1fr auto;align-items:end;margin-bottom:8px">
+      <div><label for="addr-self">Tự xưng</label><select id="addr-self">${opt([["em", "em"], ["anh", "anh"], ["chị", "chị"], ["mình", "mình"], ["tôi", "tôi"], ["", "Không xưng"]], addr.self ?? "em")}</select></div>
+      <div><label for="addr-call">Gọi họ là</label><select id="addr-call">${opt([["anh", "anh"], ["chị", "chị"], ["em", "em"], ["bạn", "bạn"], ["name", "Chỉ gọi tên"]], addr.call ?? "chị")}</select></div>
+      <div><label for="addr-name">Tên gọi</label><input type="text" id="addr-name" value="${esc(addr.name ?? given)}"></div>
+      <button class="btn" id="rewrite"><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Viết lại với Claude</button>
+    </div>
+    <textarea class="slack-edit" id="slack-text" aria-label="Tin nhắn">${esc(mine ? mine.slack : "")}</textarea>
+    <p class="muted" style="font-size:12px;margin:4px 0 0">Xưng hô được lưu riêng cho từng PIC và dùng cho các lần chạy sau.</p>`;
+}
+async function rewriteMessage() {
+  const b = $("#rewrite");
+  const addr = { self: $("#addr-self").value, call: $("#addr-call").value, name: $("#addr-name").value.trim() };
+  b.disabled = true; b.innerHTML = '<span class="spin"></span> Claude đang viết…';
+  const saved = await api.save_pic_address(S.pic, addr);
+  if (!bad(saved)) S.style = saved;
+  const r = await api.rewrite_message(S.pic, S.runId);
+  b.disabled = false; b.innerHTML = '<svg class="i" aria-hidden="true"><use href="#spark"/></svg>Viết lại với Claude';
+  if (bad(r)) return;
+  S.ai = S.ai || { claude_ok: true, error: null, review: [], per_pic: {} };
+  S.ai.per_pic[S.pic] = { insights: [], todos: [], dropped: 0, ...(S.ai.per_pic[S.pic] || {}), slack: r.slack };
+  $("#slack-text").value = r.slack;
+  S.origSlack = r.slack;
+  toast("Đã viết lại tin nhắn.");
 }
 async function copySlack() {
   const ta = $("#slack-text");
   const text = ta ? ta.value : (aiFor(S.pic) || {}).slack || "";
   if (!text) { toast("Chưa có tin nhắn."); return; }
   copyText(text);
-  toast("Đã copy tin nhắn Slack.");
+  toast("Đã copy tin nhắn.");
   if (ta && text.trim() !== (S.origSlack || "").trim() && confirm("Lưu bản sửa làm mẫu văn phong?")) {
     if (!bad(await api.add_style_sample(text))) toast("Đã lưu mẫu văn phong.");
   }
@@ -419,6 +444,7 @@ function wire() {
   $("#results-body").addEventListener("click", (e) => {
     const fb = e.target.closest(".fb");
     if (fb) { e.stopPropagation(); openFb(fb.dataset.unit, fb.dataset.label); return; }
+    if (e.target.closest("#rewrite")) { rewriteMessage(); return; }
     const t = e.target.closest("[data-tab]");
     if (t) { S.tab = t.dataset.tab; renderResults(); return; }
     const row = e.target.closest("tr.expandable[data-pl]");
@@ -477,6 +503,7 @@ function wire() {
 
 async function init() {
   api = window.pywebview.api;
+  api.get_style().then((st) => { if (!st.error) S.style = st; });
   applyTheme(store("theme"));
   wire();
   renderSlots();

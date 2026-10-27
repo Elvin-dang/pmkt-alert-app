@@ -12,7 +12,7 @@ from pathlib import Path
 from .logic import version_from_name
 
 DEFAULT_STYLE = {"language": "vi_en_terms", "pronoun": "em_anhchi", "length": "short", "tone": "friendly_direct",
-                 "emoji": "low", "samples": [], "rules": ""}
+                 "emoji": "low", "samples": [], "rules": "", "pic_address": {}}
 DEFAULT_SETTINGS = {"auto_update_check": True, "email_map": {}, "last_inputs": {}, "active_logic": None,
                     "github_repo": "", "ads_account": ""}
 
@@ -138,6 +138,12 @@ class Store:
     def save_style(self, d: dict) -> None:
         with self._lock:
             self._write("style.json", {**self.get_style(), **d})
+
+    @_locked
+    def set_pic_address(self, pic: str, d: dict) -> None:
+        style = self.get_style()
+        style["pic_address"] = {**style.get("pic_address", {}), pic: {k: str(d.get(k, "")).strip() for k in ("self", "call", "name")}}
+        self.save_style(style)
 
     @_locked
     def add_style_sample(self, text: str) -> None:

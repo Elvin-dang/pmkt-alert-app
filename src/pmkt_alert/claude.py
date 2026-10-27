@@ -174,7 +174,8 @@ def numbers_in(text: str) -> list[tuple[float, bool, int]]:
     out, clean = [], _DATES.sub(" ", text)
     for m in _TOKEN.finditer(clean):
         dollar, whole, frac, suffix = m.groups()
-        if m.start() > 0 and clean[m.start() - 1].isalpha():
+        first = m.start(1) if dollar else m.start(2)  # the match may begin with a space
+        if first > 0 and clean[first - 1].isalpha():
             continue  # part of a word like "x2", "T10", "L7D"
         value = float(whole.replace(",", "") + ("." + frac if frac else ""))
         decimals = len(frac) if frac else 0
@@ -188,8 +189,14 @@ def numbers_in(text: str) -> list[tuple[float, bool, int]]:
 
 
 def _values(rows: list[dict]) -> list[float]:
-    return [abs(float(v)) for r in rows for v in r.values()
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v]
+    out = []
+    for r in rows:
+        for v in r.values():
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v:
+                out.append(abs(float(v)))
+            elif isinstance(v, str) and v.isdigit():  # e.g. campaign_id kept as text
+                out.append(float(v))
+    return out
 
 
 def grounded(text: str, rows: list[dict]) -> bool:

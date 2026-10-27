@@ -227,3 +227,28 @@ def test_open_login_requires_installed(tmp_path, monkeypatch):
 def test_bad_claude_status_is_not_an_api_error(tmp_path):
     s = Api(Store(tmp_path), status_fn=lambda: ClaudeStatus(False, None, False, False, None, "Chưa cài Claude Code")).claude_status()
     assert "error" not in s and s["detail"] == "Chưa cài Claude Code" and s["level"] == "bad"
+
+
+def test_rewrite_message_uses_pic_address_and_saves(tmp_path, synthetic_paths):
+    seen = []
+    def ask_fn(p, s):
+        seen.append(p)
+        if "slack" in s["properties"] and "insights" not in s["properties"]:
+            return {"slack": "Chào chị Tâm, hôm nay có việc HIGH nha"}
+        return empty_for(s)
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=ask_fn)
+    run = api.run(paths(synthetic_paths))
+    api.save_pic_address("PIC A", {"self": "em", "call": "chị", "name": "Tâm"})
+    out = api.rewrite_message("PIC A", run["run_id"])
+    assert out["slack"] == "Chào chị Tâm, hôm nay có việc HIGH nha"
+    assert 'gọi PIC là "chị Tâm"' in seen[-1]
+    assert api.results(run["run_id"])["ai"]["per_pic"]["PIC A"]["slack"] == out["slack"]
+
+
+def test_rewrite_message_rejects_made_up_numbers(tmp_path, synthetic_paths):
+    api = Api(Store(tmp_path / "s"), status_fn=OK,
+              ask_fn=lambda p, s: {"slack": "dư chi $987,654"} if "insights" not in s["properties"] and "slack" in s["properties"] else empty_for(s))
+    run = api.run(paths(synthetic_paths))
+    before = api.results(run["run_id"])["ai"]["per_pic"]["PIC A"]["slack"]
+    out = api.rewrite_message("PIC A", run["run_id"])
+    assert "error" in out and api.results(run["run_id"])["ai"]["per_pic"]["PIC A"]["slack"] == before

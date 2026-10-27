@@ -60,9 +60,21 @@ def _j(obj) -> str:
     return json.dumps(obj, ensure_ascii=False, default=str)
 
 
-def style_text(style: dict) -> str:
-    parts = [_STYLE_TEXT[k].get(style.get(k), str(style.get(k))) for k in _STYLE_TEXT]
+def address_text(addr: dict) -> str:
+    me = f'tự xưng "{addr["self"]}"' if addr.get("self") else "không tự xưng"
+    name = addr.get("name", "")
+    if addr.get("call") == "name":
+        return f'Xưng hô với PIC này: {me}, chỉ gọi tên "{name}" (không dùng anh/chị/em).'
+    return f'Xưng hô với PIC này: {me}, gọi PIC là "{(addr.get("call", "") + " " + name).strip()}".'
+
+
+def style_text(style: dict, pic: str | None = None) -> str:
+    addr = (style.get("pic_address") or {}).get(pic) if pic else None
+    keys = [k for k in _STYLE_TEXT if not (addr and k == "pronoun")]
+    parts = [_STYLE_TEXT[k].get(style.get(k), str(style.get(k))) for k in keys]
     out = "Văn phong: " + "; ".join(parts) + "."
+    if addr:
+        out += "\n" + address_text(addr)
     if style.get("rules"):
         out += f"\nLưu ý thêm của người dùng: {style['rules']}"
     if style.get("samples"):
@@ -84,7 +96,7 @@ Dữ liệu dưới đây đã được hệ thống rule tính sẵn (Alert_Log
 
 {_RULES}
 
-{style_text(style)}
+{style_text(style, pic)}
 
 Bài học đã được duyệt (luôn tuân theo):
 {chr(10).join('- ' + x for x in lessons) or '- (chưa có)'}
@@ -166,10 +178,14 @@ Schema: {_j(FEEDBACK_SCHEMA)}"""
 
 
 def style_prompt(style: dict, digest_row: dict, rows: dict) -> str:
-    return f"""Viết MỘT tin nhắn Slack gửi PIC "{digest_row.get('pic')}" tóm tắt việc cần làm hôm nay.
-{_RULES}
+    return f"""Viết MỘT tin nhắn gửi PIC "{digest_row.get('pic')}" tóm tắt việc cần làm hôm nay.
+QUY TẮC BẮT BUỘC:
+- Chỉ trả về MỘT object JSON đúng schema bên dưới, không thêm chữ nào khác.
+- Mọi con số phải lấy NGUYÊN từ dữ liệu được cung cấp (có thể làm tròn hoặc đổi tỉ lệ sang %). Không tự tính số mới.
+- Đây là tin nhắn chat cho người đọc: không ghi unit_id, mã tham chiếu hay campaign ID.
+- Ngắn gọn: tối đa 10 dòng – tổng quan 1 dòng, các việc HIGH quan trọng nhất, tổng excess spend.
 
-{style_text(style)}
+{style_text(style, digest_row.get('pic'))}
 
 Tổng quan: {_j(digest_row)}
 Dữ liệu: {_j(rows)}
