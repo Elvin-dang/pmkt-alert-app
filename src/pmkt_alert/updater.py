@@ -11,7 +11,7 @@ import urllib.request
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-DEFAULT_REPO = ""  # "<owner>/pmkt-alert-app" — set before the first release
+DEFAULT_REPO = "Elvin-dang/pmkt-alert-app"
 
 
 @dataclass
