@@ -197,3 +197,28 @@ def test_numbers_inside_names_and_units_are_ignored():
     assert grounded("2 camp SB PT 18lbs & 35lbs: excess $61.27", rows)
     assert grounded("PL Roller Foam - Single 20 lbs đang overspend", rows)
     assert not grounded("excess $61.99", rows)
+
+
+def test_cancel_all_kills_running_claude(tmp_path, monkeypatch):
+    import sys
+    import threading
+    import time
+    fake = tmp_path / "claude"
+    fake.write_text(f"#!{sys.executable}\nimport time\ntime.sleep(30)\n")
+    fake.chmod(0o755)
+    monkeypatch.setattr(claude_mod, "_exe", lambda: str(fake))
+    err = {}
+
+    def call():
+        try:
+            claude_mod.ask("x", STYLE_SCHEMA, timeout=60)
+        except ClaudeError as e:
+            err["e"] = e
+    t = threading.Thread(target=call)
+    t0 = time.monotonic()
+    t.start()
+    time.sleep(1)
+    claude_mod.cancel_all()
+    t.join(10)
+    assert not t.is_alive() and time.monotonic() - t0 < 8
+    assert "dừng" in str(err["e"]).lower() and err["e"].retryable is False

@@ -2,6 +2,7 @@
 Every public method returns JSON-serializable data and never raises."""
 import functools
 import json
+import threading
 import traceback
 from datetime import date, datetime
 from pathlib import Path
@@ -11,7 +12,7 @@ from .ai import evaluate_logic, generate, offline, pic_rows
 from .aggregate import asin_map
 from .changelog import bundled_text, parse as parse_changelog
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
-from .claude import ClaudeError, ask, check_status, grounded, open_login
+from .claude import ClaudeError, ask, cancel_all, check_status, grounded, open_login
 from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
 from .evidence import evidence
@@ -25,6 +26,9 @@ from .rules.actions import suggest_email_map
 from .store import Store
 from .updater import DEFAULT_REPO, apply_update, download_verified, is_newer, latest_release, recent_releases
 from .windows import Windows
+
+
+STOPPED = "Đã dừng theo yêu cầu"
 
 
 def always_fail(prompt, schema):
@@ -51,6 +55,8 @@ class Api:
         self._ask = self._with_note(ask_fn)
         self._release, self._recent = release_fn, recent_fn
         self._window = None
+        self._cancel = threading.Event()  # set by cancel_run(); cleared when a run ends
+        self._running = False
         self._inputs = None
         self._paths: list[str] = []
 
@@ -152,7 +158,28 @@ class Api:
         return {"roles": roles, "missing": [r for r in ROLES if r not in roles], "unknown": unknown}
 
     @safe
+    def cancel_run(self) -> dict:
+        if not self._running:
+            return {"ok": False}
+        self._cancel.set()
+        cancel_all()
+        return {"ok": True}
+
+    @safe
     def run(self, paths: list[str], as_of: str | None = None, use_claude: bool = True) -> dict:
+        self._running = True
+        try:
+            return self._run(paths, as_of, use_claude)
+        finally:
+            self._running = False
+            self._cancel.clear()
+
+    def _ask_unless_stopped(self, prompt: str, schema: dict) -> dict:
+        if self._cancel.is_set():
+            raise ClaudeError(STOPPED)
+        return self._ask(prompt, schema)
+
+    def _run(self, paths: list[str], as_of: str | None, use_claude: bool) -> dict:
         self._progress("load", "running", "Đọc & làm sạch data")
         roles = detect_inputs([Path(p) for p in paths])
         inputs = load_inputs(roles, self._store.get_settings().get("ads_account") or None)
@@ -171,6 +198,9 @@ class Api:
         self._progress("logic", "warn" if errs else "done",
                        f"{logic.path.name}: {errs} lỗi (đã dùng giá trị dự phòng), "
                        f"{sum(i['code'] == 'UNUSED' for i in logic_issues)} tham số app chưa dùng" if logic_issues else logic.path.name)
+        if self._cancel.is_set():
+            self._progress("load", "warn", "Đã dừng")
+            return {"cancelled": True}
         self._progress("load", "done", f"{len(inputs.raw):,} dòng raw · {len(inputs.ads):,} dòng ads_camp")
 
         self._progress("rules", "running", "Tầng 0–4")
@@ -203,7 +233,13 @@ class Api:
             inel = inputs.ineligible[(inputs.ineligible["date"] >= l7d[0]) & (inputs.ineligible["date"] <= l7d[1])]
             inel = inel.merge(amap, on="asin")[["asin", "pl", "pic", "reason"]].drop_duplicates("asin")
             ai = generate(rj, logic, self._store, inputs.event_days, inputs.defind_text,
-                          inel.to_dict("records"), ask_fn=self._ask, careful=careful)
+                          inel.to_dict("records"), ask_fn=self._ask_unless_stopped, careful=careful)
+            if self._cancel.is_set():
+                ai.update(claude_ok=False, error=STOPPED + " – kết quả rule vẫn đầy đủ",
+                          logic_eval=evaluate_logic(logic_issues, logic, ask_fn=always_fail))
+                self._store.update_run_ai(run_id, ai)
+                self._progress("claude", "warn", "Đã dừng")
+                return {"run_id": run_id, "result": rj, "ai": ai, "stopped": True}
             self._progress("logic_eval", "running", "Claude đánh giá các vấn đề trong file logic")
             ai["logic_eval"] = evaluate_logic(logic_issues, logic, ask_fn=self._ask)
             self._progress("logic_eval", "done", ai["logic_eval"]["summary"][:120])
@@ -213,7 +249,7 @@ class Api:
             except Exception:  # a failed backtest must not hide the run
                 self._log(traceback.format_exc())
             self._progress("claude", "done" if ai["claude_ok"] else "warn", ai["error"] or "")
-        return {"run_id": run_id, "result": rj, "ai": ai}
+        return {"run_id": run_id, "result": rj, "ai": ai, "stopped": False}
 
     @safe
     def evidence(self, unit_id: str, run_id: str | None = None) -> dict:

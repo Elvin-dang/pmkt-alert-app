@@ -6,6 +6,7 @@ Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản p
 ### Mới
 - Cập nhật app chạy ngầm, không còn mở cửa sổ terminal; nếu lỗi sẽ tự mở lại bản cũ và ghi `update.log`.
 - Cửa sổ "Có gì mới" tự hiện một lần sau mỗi lần cập nhật.
+- Nút **Dừng** khi đang chạy: dừng ngay các lệnh Claude, vẫn giữ đầy đủ kết quả rule.
 - File Alert_Logic có lỗi không còn làm dừng lần chạy: app dùng giá trị dự phòng, liệt kê từng lỗi theo ô, và Claude đánh giá lỗi nào nghiêm trọng / nên sửa / bỏ qua được kèm hướng dẫn sửa.
 - Đọc được file logic có bố cục khác (đổi thứ tự / tên mục), liệt kê các tham số app chưa dùng.
 ### Lưu ý

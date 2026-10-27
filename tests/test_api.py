@@ -403,3 +403,36 @@ def test_whats_new_hidden_in_dev(tmp_path, monkeypatch):
     import pmkt_alert.api as api_mod
     monkeypatch.setattr(api_mod, "__version__", "0.0.0-dev")
     assert Api(Store(tmp_path), status_fn=OK).whats_new()["show"] is False
+
+
+def test_stop_during_claude_keeps_rule_results(tmp_path, synthetic_paths):
+    import threading
+    started = threading.Event()
+    calls = []
+
+    def ask_fn(p, s):
+        calls.append(1)
+        started.set()
+        for _ in range(100):  # a slow Claude call
+            if api._cancel.is_set():
+                raise ClaudeError("Đã dừng theo yêu cầu", retryable=False)
+            threading.Event().wait(0.05)
+        return empty_for(s)
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=ask_fn)
+    box = {}
+    t = threading.Thread(target=lambda: box.update(out=api.run(paths(synthetic_paths))))
+    t.start()
+    started.wait(10)
+    assert api.cancel_run()["ok"] is True
+    t.join(20)
+    out = box["out"]
+    assert out["result"]["pl"] and out["ai"]["claude_ok"] is False and "dừng" in out["ai"]["error"].lower()
+    assert out["stopped"] is True and len(calls) <= 5
+    assert api.results(out["run_id"])["ai"]["error"]  # saved
+
+
+def test_stop_before_rules_cancels(tmp_path, synthetic_paths):
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    api._cancel.set()  # stop pressed while files were loading
+    out = api.run(paths(synthetic_paths))
+    assert out == {"cancelled": True} and api.history()["runs"] == []

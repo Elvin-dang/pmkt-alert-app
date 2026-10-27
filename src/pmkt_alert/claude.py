@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -45,6 +46,44 @@ class ClaudeStatus:
         d = asdict(self)
         d["detail"] = d.pop("error")
         return {**d, "level": self.level}
+
+
+# Running claude processes, so a Stop press can end them (cancel_all).
+_ACTIVE: set = set()
+_KILLED: set = set()
+_LOCK = threading.Lock()
+
+
+def _popen_run(args, input=None, timeout=None, cwd=None, creationflags=0, **_):
+    """subprocess.run equivalent whose process can be killed by cancel_all()."""
+    p = subprocess.Popen(args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         encoding="utf-8", errors="replace", cwd=cwd, creationflags=creationflags)
+    with _LOCK:
+        _ACTIVE.add(p)
+    try:
+        out, err = p.communicate(input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        p.communicate()
+        raise
+    finally:
+        with _LOCK:
+            _ACTIVE.discard(p)
+            killed = p in _KILLED
+            _KILLED.discard(p)
+    if killed:
+        raise ClaudeError("Đã dừng theo yêu cầu")
+    return subprocess.CompletedProcess(args, p.returncode, out, err)
+
+
+def cancel_all() -> None:
+    with _LOCK:
+        for p in list(_ACTIVE):
+            _KILLED.add(p)
+            try:
+                p.kill()
+            except OSError:
+                pass
 
 
 def _exe() -> str | None:
@@ -140,7 +179,7 @@ def _first_object(text: str) -> dict:
     raise ClaudeError("Claude không trả về JSON", retryable=True)
 
 
-def ask(prompt: str, schema: dict, runner=subprocess.run, timeout: int = 240) -> dict:
+def ask(prompt: str, schema: dict, runner=_popen_run, timeout: int = 240) -> dict:
     exe = _exe()
     if not exe:
         raise ClaudeError("Chưa cài Claude Code")

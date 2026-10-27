@@ -150,15 +150,30 @@ window.onProgress = (step, state, detail) => {
     return `<div class="check">${badge}${esc(STEPS[k] || k)} <span class="muted">— ${esc(v.detail)}</span></div>`;
   }).join("");
 };
+function runningUi(on) {
+  $("#run-btn").classList.toggle("hidden", on);
+  $("#stop-btn").classList.toggle("hidden", !on);
+  $("#stop-btn").disabled = false;
+  $("#stop-btn").innerHTML = '<svg class="i" aria-hidden="true"><use href="#x"/></svg>Dừng';
+}
+async function stopRun() {
+  $("#stop-btn").disabled = true;
+  $("#stop-btn").innerHTML = '<span class="spin"></span> Đang dừng…';
+  await api.cancel_run();
+}
 async function doRun() {
   $("#run-btn").disabled = true;
+  runningUi(true);
   Object.keys(STEP_STATE).forEach((k) => delete STEP_STATE[k]);
   window.onProgress("load", "running", "");
   if ($("#use-claude").checked) await checkClaude();
   const r = await api.run(S.paths, $("#as-of").value || null, $("#use-claude").checked);
+  runningUi(false);
   $("#run-btn").disabled = false;
   if (r.error) { $("#input-error").textContent = r.error; window.onProgress("load", "warn", r.error); return; }
+  if (r.cancelled) { toast("Đã dừng – chưa có kết quả mới."); return; }
   setRun(r);
+  if (r.stopped) toast("Đã dừng – kết quả rule đầy đủ, phần Claude bị bỏ dở.");
   if (r.ai && !r.ai.claude_ok) setPill("warn", "Lỗi ở lần chạy này", r.ai.error || "");
   go("results");
 }
@@ -583,6 +598,7 @@ function wire() {
   $("#pick").onclick = async () => { const r = await api.pick_folder(); if (!bad(r) && r.paths) useInputs(r.paths); };
   $("#pick-files").onclick = async () => { const r = await api.pick_files(); if (!bad(r) && r.paths) useInputs(r.paths); };
   $("#run-btn").onclick = doRun;
+  $("#stop-btn").onclick = stopRun;
   const zone = document.body;
   zone.addEventListener("dragover", (e) => { e.preventDefault(); $("#drop-zone").classList.add("drop"); });
   zone.addEventListener("dragleave", () => $("#drop-zone").classList.remove("drop"));
