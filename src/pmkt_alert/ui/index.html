@@ -234,31 +234,14 @@
 <div class="modal" id="setup" role="dialog" aria-modal="true" aria-labelledby="setup-title">
   <div class="box" style="width:880px">
     <div style="display:flex;align-items:center"><h2 id="setup-title" style="margin:0 0 4px;flex:1">Thiết lập máy này</h2><button class="btn sm ghost" id="su-lang" data-no-i18n>English</button></div>
-    <p class="muted" style="margin:0 0 12px;font-size:13px">Đăng nhập bằng email công việc. Lead chạy dữ liệu, duyệt rồi tải báo cáo lên; mỗi thành viên chỉ xem được phần PIC của mình.</p>
+    <p class="muted" style="margin:0 0 12px;font-size:13px">Đăng nhập bằng tài khoản Lead cấp cho bạn. Lead chạy dữ liệu, duyệt rồi tải báo cáo lên; mỗi thành viên chỉ xem được phần PIC của mình.</p>
     <div id="setup-choose">
       <div class="card">
-        <div id="su-server">
-          <label for="su-sb-url">Supabase Project URL</label><input type="text" id="su-sb-url" placeholder="https://xxxx.supabase.co">
-          <label for="su-sb-anon" style="margin-top:8px">anon public key</label><input type="text" id="su-sb-anon">
-        </div>
-        <p class="muted hidden" id="su-server-bundled" style="font-size:12px;margin:0 0 6px">Máy chủ nhóm đã có sẵn trong app · <button class="btn ghost sm" id="su-server-edit">Đổi</button></p>
-        <label for="su-email" style="margin-top:8px">Email</label>
-        <div style="display:flex;gap:6px"><input type="text" id="su-email" autocomplete="email" placeholder="ten@congty.com"><button class="btn" id="su-send" style="white-space:nowrap">Gửi mã</button></div>
-        <div id="su-code-row" class="hidden">
-          <label for="su-code" style="margin-top:8px">Mã 6 số trong email</label>
-          <div style="display:flex;gap:6px"><input type="text" id="su-code" inputmode="numeric" autocomplete="one-time-code" maxlength="10" style="max-width:160px"><button class="btn primary" id="su-verify">Đăng nhập</button></div>
-        </div>
+        <label for="su-email">Email</label><input type="text" id="su-email" autocomplete="username" placeholder="ten@congty.com">
+        <label for="su-pw" style="margin-top:8px">Mật khẩu</label>
+        <div style="display:flex;gap:6px"><input type="password" id="su-pw" autocomplete="current-password"><button class="btn primary" id="su-signin" style="white-space:nowrap">Đăng nhập</button></div>
+        <p class="muted" style="font-size:12px;margin:8px 0 0">Chưa có tài khoản hoặc quên mật khẩu? Nhờ Lead tạo / đặt lại trong app.</p>
       </div>
-      <details style="margin-top:10px"><summary class="muted" style="cursor:pointer;font-size:13px">Lead lần đầu: thiết lập Supabase cho nhóm</summary>
-        <ol style="font-size:13px;margin:8px 0;padding-left:18px">
-          <li>Tạo project tại supabase.com (gói Free là đủ).</li>
-          <li>Authentication → Email Templates → <b>Magic Link</b>: thêm <code>{{ .Token }}</code> vào nội dung để email có mã 6 số.</li>
-          <li>Nhập email Lead bên dưới → copy SQL → dán vào SQL Editor của project → Run.</li>
-          <li>Project Settings → API: copy Project URL và anon public key vào ô phía trên rồi đăng nhập bằng email Lead.</li>
-        </ol>
-        <div style="display:flex;gap:6px"><input type="text" id="su-lead-email" placeholder="Email Lead"><button class="btn" id="su-sql">Tạo SQL</button></div>
-        <div id="su-sql-box" style="margin-top:8px"></div>
-      </details>
     </div>
     <p style="margin:10px 0 0"><button class="btn ghost sm" id="su-skip">Dùng một mình, đăng nhập sau</button></p>
     <div id="setup-done" class="hidden"></div>

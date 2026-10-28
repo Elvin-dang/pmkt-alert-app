@@ -8,12 +8,17 @@ import urllib.error
 import urllib.parse
 
 
+LEAD_PASSWORD = "lead-password-1"
+
+
 class FakeSupabase:
+    """Mirrors supabase.setup_sql (RLS) and supabase/functions/pmkt-admin (account management)."""
+
     def __init__(self, lead_email: str):
         self.members = {lead_email: {"email": lead_email, "role": "lead", "pic": None, "name": "Lead", "enc_keys": [],
                                      "sign_pub": None, "active": True}}
-        self.users: set[str] = set()
-        self.codes: dict[str, str] = {}
+        self.passwords: dict[str, str] = {lead_email: LEAD_PASSWORD}  # auth.users: email → password
+        self.banned: set[str] = set()
         self.tokens: dict[str, str] = {}  # access or refresh token → email
         self.objects: dict[str, bytes] = {}
         self.sent: list[str] = []
@@ -54,26 +59,27 @@ class FakeSupabase:
         return {"access_token": at, "refresh_token": rt}
 
     def route(self, method, path, q, body, who, req):
-        if path == "/auth/v1/otp":
+        if path == "/auth/v1/token" and q.get("grant_type") == ["password"]:
             email = body["email"]
-            if email not in self.users:
-                if not self._row(email):
-                    return 500, {"msg": "Database error saving new user"}  # the pmkt_only_listed trigger
-                self.users.add(email)
-            self.codes[email] = "123456"
-            self.sent.append(email)
-            return 200, {}
-        if path == "/auth/v1/verify":
-            if self.codes.get(body["email"]) != body["token"]:
-                return 403, {"msg": "Token has expired or is invalid"}
-            return 200, self._session(body["email"])
+            if self.passwords.get(email) != body["password"]:
+                return 400, {"error_description": "Invalid login credentials"}
+            if email in self.banned:
+                return 400, {"msg": "User is banned"}
+            return 200, self._session(email)
         if path == "/auth/v1/token":
             email = self.tokens.pop(body["refresh_token"], None)
+            if email in self.banned or email not in self.passwords:
+                return 400, {"error_description": "Invalid Refresh Token"}
             return (200, self._session(email)) if email else (400, {"error_description": "Invalid Refresh Token"})
         if path == "/auth/v1/logout":
             return 204, None
         if not who:
             return 401, {"message": "JWT required"}
+        if path == "/auth/v1/user" and method == "PUT":
+            self.passwords[who] = body["password"]
+            return 200, {}
+        if path == "/functions/v1/pmkt-admin":
+            return self.admin(who, body)
         if path == "/rest/v1/pmkt_members":
             eq = q.get("email", [""])[0].removeprefix("eq.")
             visible = [r for r in self.members.values()
@@ -127,3 +133,37 @@ class FakeSupabase:
                     self.objects.pop(p, None)
             return 200, []
         return 404, {"message": f"fake: no route {method} {path}"}
+
+    def admin(self, caller, body):
+        """Same rules as supabase/functions/pmkt-admin/index.ts (tested with Deno)."""
+        if not self.is_lead(caller):
+            return 403, {"error": "Chỉ Lead được quản lý tài khoản"}
+        email = str(body.get("email", "")).strip().lower()
+        if "@" not in email or "." not in email.split("@")[-1]:
+            return 400, {"error": "Email không hợp lệ"}
+        if "password" in body and len(body["password"]) < 10:
+            return 400, {"error": "Mật khẩu cần ít nhất 10 ký tự"}
+        if email == caller and body["action"] in ("delete", "set_active"):
+            return 400, {"error": "Không thể khoá hoặc xoá chính tài khoản đang dùng"}
+        if body["action"] == "create":
+            role = "lead" if body.get("role") == "lead" else "member"
+            pic = (body.get("pic") or "").strip() if role == "member" else None
+            if role == "member" and not pic:
+                return 400, {"error": "Thành viên cần có PIC"}
+            if email in self.members or email in self.passwords:
+                return 409, {"error": "Email này đã có tài khoản"}
+            self.members[email] = {"email": email, "role": role, "pic": pic, "name": body.get("name") or email,
+                                   "enc_keys": [], "sign_pub": None, "active": True}
+            self.passwords[email] = body["password"]
+            return 200, {"ok": True}
+        if email not in self.members:
+            return 404, {"error": "Không tìm thấy tài khoản"}
+        if body["action"] == "reset_password":
+            self.passwords[email] = body["password"]
+        elif body["action"] == "set_active":
+            self.members[email]["active"] = body["active"] is True
+            (self.banned.discard if body["active"] else self.banned.add)(email)
+        elif body["action"] == "delete":
+            self.members.pop(email)
+            self.passwords.pop(email, None)
+        return 200, {"ok": True}

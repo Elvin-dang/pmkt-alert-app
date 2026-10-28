@@ -25,10 +25,6 @@ jobs:
           v="${{ github.ref_name }}"
           echo "VERSION = \"${v#v}\"" > src/pmkt_alert/_version.py
           cat src/pmkt_alert/_version.py
-      - name: Team server (optional repo variables PMKT_SUPABASE_URL / PMKT_SUPABASE_ANON – public by design)
-        if: vars.PMKT_SUPABASE_URL != ''
-        shell: bash
-        run: printf '{"url": "%s", "anon": "%s"}' "${{ vars.PMKT_SUPABASE_URL }}" "${{ vars.PMKT_SUPABASE_ANON }}" > src/pmkt_alert/team.json
       - name: Build exe
         env:
           APP_NAME: PMKT-Alert

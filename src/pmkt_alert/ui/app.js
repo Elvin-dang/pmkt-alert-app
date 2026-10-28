@@ -924,7 +924,7 @@ function wireDashboard() {
 // ------------------------------------------------------------------ team: Supabase sign-in, Lead / Member
 S.role = null;
 const NOT_SIGNED = "Chưa đăng nhập nhóm";
-const STATUS = { ready: ["OK", "SẴN SÀNG"], invited: ["MED", "CHỜ ĐĂNG NHẬP"], disabled: ["INFO", "ĐÃ KHOÁ"] };
+const STATUS = { ready: ["OK", "ĐÃ ĐĂNG NHẬP"], invited: ["MED", "CHƯA ĐĂNG NHẬP"], disabled: ["INFO", "ĐÃ KHOÁ"] };
 function copyBox(id, text) {
   return `<div style="display:flex;gap:6px;align-items:flex-start"><div class="code-box" id="${id}" style="flex:1;white-space:pre-wrap;max-height:220px;overflow:auto" data-no-i18n>${esc(text)}</div><button class="btn sm" data-copy="${id}">Copy</button></div>`;
 }
@@ -936,6 +936,15 @@ async function loadRole() {
   $("#role-badge").textContent = !r.signed_in ? NOT_SIGNED : r.role === "lead" ? `Lead · ${r.email}` : `${r.pic || "—"} · chỉ xem`;
   renderTeam();
   return r;
+}
+function pwChange() {
+  return `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+    <div><label for="pw-new">Mật khẩu mới (≥ 10 ký tự)</label><input type="password" id="pw-new" autocomplete="new-password"></div>
+    <button class="btn" id="pw-save">Đổi mật khẩu</button><button class="btn ghost sm" id="team-signout">Đăng xuất</button></div>`;
+}
+function showPassword(email, pw, title) {
+  $("#mb-pw").innerHTML = `<div class="banner" style="display:block;margin:8px 0"><b>${esc(title)}</b> – gửi riêng cho <span data-no-i18n>${esc(email)}</span>. Mật khẩu chỉ hiện một lần; người đó có thể tự đổi sau khi đăng nhập.
+    <div style="margin-top:6px">${copyBox("mb-pw-text", pw)}</div></div>`;
 }
 function keyHelp() {
   return `<div class="banner" style="margin:8px 0;display:block"><b>Máy này chưa có khoá ký của Lead.</b> Nhập file khoá Lead (đã xuất từ máy cũ) để tải báo cáo lên.
@@ -951,7 +960,7 @@ async function renderTeam() {
   }
   if (r.role === "member") {
     el.innerHTML = `<h2>Nhóm · Thành viên</h2><p style="margin-top:0">${esc(r.name || "")} · <b>${esc(r.email)}</b> · PIC <b>${esc(r.pic || "—")}</b> (chỉ xem)</p>
-      ${r.opened ? `<p class="muted" style="font-size:13px">Đang xem ${esc(r.opened.file)}</p>` : ""}<button class="btn ghost sm" id="team-signout">Đăng xuất</button>`;
+      ${r.opened ? `<p class="muted" style="font-size:13px">Đang xem ${esc(r.opened.file)}</p>` : ""}${pwChange()}`;
     return;
   }
   el.innerHTML = `<h2>Nhóm · Lead</h2><p style="margin-top:0"><b>${esc(r.email)}</b> · ${esc(r.url)}</p>${r.needs_key ? keyHelp() : ""}
@@ -962,13 +971,12 @@ async function renderTeam() {
       <div><label for="mb-pic">PIC</label><input type="text" id="mb-pic" list="mb-pics"><datalist id="mb-pics"></datalist></div>
       <div><label for="mb-role">Vai trò</label><div style="display:flex;gap:6px"><select id="mb-role"><option value="member">Thành viên (chỉ xem PIC)</option><option value="lead">Lead</option></select><button class="btn primary" id="mb-add">Tạo</button></div></div>
     </div>
-    <p class="muted" style="font-size:12px">Người được tạo đăng nhập bằng chính email đó (mã 6 số gửi qua email). Đổi PIC / khoá tài khoản có hiệu lực ngay; báo cáo tải lên trước khi một người đăng nhập lần đầu sẽ không có phần của họ.</p>
+    <div id="mb-pw"></div>
+    <p class="muted" style="font-size:12px">App tạo mật khẩu đầu tiên để bạn gửi cho người đó; không có email nào được gửi. Đổi PIC / khoá tài khoản có hiệu lực ngay; báo cáo tải lên trước khi một người đăng nhập lần đầu sẽ không có phần của họ.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
       <div><label for="lk-pw">Mật khẩu file khoá (≥ 8 ký tự)</label><input type="password" id="lk-pw" autocomplete="new-password"></div>
       <button class="btn" id="lk-export" ${r.needs_key ? "disabled" : ""}>Xuất khoá Lead…</button>
-      <button class="btn ghost sm" id="team-sql">SQL thiết lập…</button>
-      <button class="btn ghost sm" id="team-signout">Đăng xuất</button>
-    </div><div id="team-sql-box" class="hidden" style="margin-top:8px"></div>`;
+    </div>${pwChange()}`;
   loadMembers();
 }
 async function loadMembers() {
@@ -982,36 +990,23 @@ async function loadMembers() {
     ${m.members.map((x) => `<tr data-email="${esc(x.email)}"><td data-no-i18n>${esc(x.email)}</td><td data-no-i18n>${esc(x.name || "")}</td><td>${x.role === "lead" ? "Lead" : "Thành viên"}</td>
       <td>${x.role === "lead" ? "—" : `<input type="text" class="mb-pic-edit" list="mb-pics" value="${esc(x.pic || "")}" style="width:140px" aria-label="PIC">`}</td>
       <td><span class="sev ${STATUS[x.status][0]}">${STATUS[x.status][1]}</span></td>
-      <td style="white-space:nowrap">${x.email === S.role.email ? "" : `<button class="btn sm ghost" data-mb="toggle" data-active="${x.active ? 1 : 0}">${x.active ? "Khoá" : "Mở khoá"}</button><button class="btn sm ghost" data-mb="delete">Xoá</button>`}</td></tr>`).join("")}
+      <td style="white-space:nowrap">${x.email === S.role.email ? "" : `<button class="btn sm ghost" data-mb="reset">Đặt lại mật khẩu</button><button class="btn sm ghost" data-mb="toggle" data-active="${x.active ? 1 : 0}">${x.active ? "Khoá" : "Mở khoá"}</button><button class="btn sm ghost" data-mb="delete">Xoá</button>`}</td></tr>`).join("")}
   </tbody></table></div>`;
 }
 function openSetup() {
   const r = S.role || {};
-  $("#setup-error").textContent = "";
-  $("#su-sb-url").value = r.url || "";
-  $("#su-server").classList.toggle("hidden", !!(r.bundled && r.url));
-  $("#su-server-bundled").classList.toggle("hidden", !(r.bundled && r.url));
+  $("#setup-error").textContent = r.configured === false ? "App chưa có máy chủ nhóm – cập nhật app lên bản mới nhất." : "";
   $("#su-email").value = r.email || "";
-  $("#su-code-row").classList.add("hidden");
+  $("#su-pw").value = "";
   $("#setup").classList.add("on");
 }
 function closeSetup() { $("#setup").classList.remove("on"); }
-async function sendCode() {
-  $("#setup-error").textContent = "";
-  const url = $("#su-sb-url").value.trim(), anon = $("#su-sb-anon").value.trim();
-  const c = await api.team_connect(url, anon);  // blank fields fall back to the server built into the app
-  if (c.error) { $("#setup-error").textContent = c.error; return; }
-  const b = $("#su-send"); b.disabled = true;
-  const r = await api.team_send_code($("#su-email").value.trim());
+async function signIn() {
+  const b = $("#su-signin"); b.disabled = true;
+  const r = await api.team_sign_in($("#su-email").value.trim(), $("#su-pw").value);
   b.disabled = false;
   if (r.error) { $("#setup-error").textContent = r.error; return; }
-  $("#su-code-row").classList.remove("hidden");
-  $("#su-code").focus();
-  toast("Đã gửi mã – kiểm tra email (cả mục Spam).");
-}
-async function verifyCode() {
-  const r = await api.team_verify($("#su-email").value.trim(), $("#su-code").value.trim());
-  if (r.error) { $("#setup-error").textContent = r.error; return; }
+  $("#su-pw").value = "";
   closeSetup();
   await loadRole();
   toast(r.role === "lead" ? "Đã đăng nhập – Lead." : `Đã đăng nhập – xem PIC ${r.pic}.`);
@@ -1047,14 +1042,8 @@ async function uploadReport() {
 }
 function wireTeam() {
   $("#role-badge").onclick = () => { if (!(S.role || {}).signed_in) openSetup(); else { go("settings"); loadSettings(); } };
-  $("#su-send").onclick = sendCode;
-  $("#su-verify").onclick = verifyCode;
-  $("#su-code").addEventListener("keydown", (e) => { if (e.key === "Enter") verifyCode(); });
-  $("#su-server-edit").onclick = () => { $("#su-server").classList.remove("hidden"); $("#su-server-bundled").classList.add("hidden"); };
-  $("#su-sql").onclick = async () => {
-    const r = await api.supabase_sql($("#su-lead-email").value.trim());
-    $("#su-sql-box").innerHTML = r.error ? `<p style="color:var(--high)">${esc(r.error)}</p>` : copyBox("su-sql-text", r.sql);
-  };
+  $("#su-signin").onclick = signIn;
+  $("#su-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); });
   $("#su-skip").onclick = () => { store("setupSkip", "1"); closeSetup(); };
   $("#upload-btn").onclick = uploadReport;
   $("#reload-pmkt").onclick = () => loadReports(false);
@@ -1076,6 +1065,10 @@ function wireTeam() {
     if (t.dataset.mb) {
       const row = t.closest("tr"), email = row.dataset.email;
       if (t.dataset.mb === "delete" && confirm(I18N.t("Xoá tài khoản này? Người đó mất quyền xem ngay lập tức."))) { if (!bad(await api.remove_member(email))) loadMembers(); }
+      if (t.dataset.mb === "reset" && confirm(I18N.t("Tạo mật khẩu mới cho tài khoản này? Mật khẩu cũ hết hiệu lực."))) {
+        const r = await api.reset_password(email);
+        if (!bad(r)) showPassword(email, r.password, "Mật khẩu mới");
+      }
       if (t.dataset.mb === "toggle") { if (!bad(await api.update_member(email, { active: t.dataset.active !== "1" }))) loadMembers(); }
       return;
     }
@@ -1083,13 +1076,14 @@ function wireTeam() {
       case "team-setup": openSetup(); break;
       case "team-signout": if (!bad(await api.team_sign_out())) { S.run = null; await loadRole(); openSetup(); } break;
       case "mb-add": {
-        const r = await api.add_member($("#mb-email").value.trim(), $("#mb-name").value.trim(), $("#mb-pic").value.trim(), $("#mb-role").value);
-        if (!bad(r)) { toast("Đã tạo tài khoản – báo người đó mở app và đăng nhập bằng email này."); ["#mb-email", "#mb-name", "#mb-pic"].forEach((s) => ($(s).value = "")); loadMembers(); }
+        const email = $("#mb-email").value.trim();
+        const r = await api.add_member(email, $("#mb-name").value.trim(), $("#mb-pic").value.trim(), $("#mb-role").value);
+        if (!bad(r)) { ["#mb-email", "#mb-name", "#mb-pic"].forEach((s) => ($(s).value = "")); await loadMembers(); showPassword(email.toLowerCase(), r.password, "Đã tạo tài khoản"); }
         break;
       }
-      case "team-sql": {
-        const r = await api.supabase_sql();
-        if (!bad(r)) { $("#team-sql-box").innerHTML = copyBox("team-sql-text", r.sql); $("#team-sql-box").classList.toggle("hidden"); }
+      case "pw-save": {
+        const r = await api.team_change_password($("#pw-new").value);
+        if (!bad(r)) { $("#pw-new").value = ""; toast("Đã đổi mật khẩu."); }
         break;
       }
       case "lk-export": {

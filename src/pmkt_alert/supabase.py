@@ -1,5 +1,6 @@
-"""Team backend on Supabase: sign-in with an emailed 6-digit code, the member list (who is Lead, which PIC),
-and the private "reports" bucket. Every rule is enforced by Postgres row-level security (setup_sql), so a
+"""Team backend on Supabase (one project, built into the app – nobody on the team touches infrastructure):
+email + password sign-in (accounts are created by a Lead through the pmkt-admin function, no email is ever sent),
+the member list (who is Lead, which PIC) and the private "reports" bucket. Every rule is enforced by Postgres row-level security (setup_sql), so a
 modified app gets nothing more than its own rows and files. Reports stay encrypted and Lead-signed on top."""
 import hashlib
 import json
@@ -27,6 +28,7 @@ create table if not exists public.pmkt_members (
   role text not null check (role in ('lead', 'member')),
   pic text,
   name text,
+  user_id uuid,                             -- the login (auth.users) – set by the pmkt-admin function
   enc_keys text[] not null default '{}',   -- public encryption keys of the person's devices (set by their app)
   sign_pub text,                            -- Lead only: public signing key, members verify reports with it
   active boolean not null default true,
@@ -90,6 +92,7 @@ create policy pmkt_reports_insert on storage.objects for insert to authenticated
 drop policy if exists pmkt_reports_delete on storage.objects;
 create policy pmkt_reports_delete on storage.objects for delete to authenticated
   using (bucket_id = 'reports' and public.pmkt_is_lead());
+alter table public.pmkt_members add column if not exists user_id uuid;
 
 -- The first Lead.
 insert into public.pmkt_members (email, role, name) values ('LEAD_EMAIL', 'lead', 'Lead')
@@ -129,11 +132,16 @@ class Supabase:
         except urllib.error.HTTPError as e:
             try:
                 d = json.loads(e.read() or b"{}")
-                detail = d.get("msg") or d.get("message") or d.get("error_description") or d.get("error") or ""
+                detail = d.get("error") if isinstance(d.get("error"), str) and " " in d.get("error", "") else (
+                    d.get("msg") or d.get("message") or d.get("error_description") or d.get("error") or "")
             except (ValueError, AttributeError):
                 detail = ""
-            if "PMKT:" in detail or "Database error saving new user" in detail:
-                raise TeamError("Email này chưa được Lead thêm vào nhóm") from None
+            if "Invalid login credentials" in detail:
+                raise TeamError("Sai email hoặc mật khẩu") from None
+            if "banned" in detail.lower():
+                raise TeamError("Tài khoản đã bị Lead khoá") from None
+            if path.startswith("/functions/") and detail:
+                raise TeamError(detail) from None
             if e.code in (401, 403):
                 raise TeamError(f"Không có quyền ({detail or e.code}) – thử đăng nhập lại") from None
             raise TeamError(f"Supabase báo lỗi {e.code}: {detail}") from None
@@ -144,15 +152,19 @@ class Supabase:
         out = self._call(*a, **k)
         return json.loads(out) if out else None
 
-    # -- auth: email + 6-digit code (the Magic Link email template must contain {{ .Token }})
-    def send_code(self, email: str) -> None:
-        self._call("POST", "/auth/v1/otp", json_body={"email": email.strip().lower(), "create_user": True})
-
-    def verify(self, email: str, code: str) -> str:
-        out = self._json("POST", "/auth/v1/verify",
-                         json_body={"type": "email", "email": email.strip().lower(), "token": code.strip()})
+    # -- auth: email + password (signs-ups are disabled; a Lead creates logins through pmkt-admin)
+    def sign_in(self, email: str, password: str) -> str:
+        out = self._json("POST", "/auth/v1/token?grant_type=password",
+                         json_body={"email": email.strip().lower(), "password": password})
         self.token = out["access_token"]
         return out["refresh_token"]
+
+    def change_password(self, password: str) -> None:
+        self._call("PUT", "/auth/v1/user", json_body={"password": password})
+
+    def admin(self, action: str, **payload) -> dict:
+        """Lead-only account management, run inside Supabase by the pmkt-admin function."""
+        return self._json("POST", "/functions/v1/pmkt-admin", json_body={"action": action, **payload}) or {}
 
     def refresh(self, refresh_token: str) -> str:
         out = self._json("POST", "/auth/v1/token?grant_type=refresh_token", json_body={"refresh_token": refresh_token})

@@ -5,6 +5,7 @@ import functools
 import json
 import os
 import re
+import secrets
 import threading
 import time
 import traceback
@@ -28,7 +29,7 @@ from .package import build as build_package
 from .package import read as read_package
 from .progress import Eta
 from .share import build_parts, unpack_run
-from .supabase import LEAD_FILE, Supabase, TeamError, pic_file, setup_sql
+from .supabase import LEAD_FILE, Supabase, TeamError, pic_file
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -37,6 +38,12 @@ from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 
 EMAIL_RE = re.compile(r"[^@\s']+@[^@\s']+\.[^@\s']+")
 _pub64 = lambda pub: base64.b64encode(raw_public(pub)).decode()  # noqa: E731
+
+
+def _new_password() -> str:
+    """Readable first password, e.g. 'kq7m-x3vt-p9da' (no 0/o/1/l)."""
+    abc = "abcdefghijkmnpqrstuvwxyz23456789"
+    return "-".join("".join(secrets.choice(abc) for _ in range(4)) for _ in range(3))
 
 
 def _bundled_team() -> dict:
@@ -177,16 +184,19 @@ class Api:
             raise PermissionError("Chưa đăng nhập nhóm (Cài đặt → Nhóm)")
         return MemberKey.from_bytes(base64.b64decode(raw)).private
 
+    def _server(self) -> tuple[str, str]:
+        t, b = self._team(), _bundled_team()
+        return (t.get("url") or b.get("url") or "", t.get("anon") or b.get("anon") or "")
+
     def _sb(self) -> Supabase:
         """Signed-in client; the access token is refreshed at most every 45 minutes."""
-        t = self._team()
-        sb_cfg = (t.get("url"), t.get("anon"))
+        sb_cfg = self._server()
         if self._sb_cache and self._sb_cache[0] == sb_cfg and time.monotonic() - self._sb_cache[1] < 45 * 60:
             return self._sb_cache[2]
         session = self._secrets().get("session")
-        if not session or not t.get("url"):
+        if not session or not sb_cfg[0]:
             raise PermissionError("Chưa đăng nhập nhóm (Cài đặt → Nhóm)")
-        sb = Supabase(t["url"], t["anon"], opener=self._sb_opener)
+        sb = Supabase(*sb_cfg, opener=self._sb_opener)
         try:
             new_rt = sb.refresh(session["refresh"])
         except TeamError as e:
@@ -265,9 +275,8 @@ class Api:
     @safe
     def team_info(self) -> dict:
         t, st = self._team(), self._store.get_settings()
-        bundled = _bundled_team()
-        out = {"url": t.get("url") or bundled.get("url") or "", "has_anon": bool(t.get("anon") or bundled.get("anon")),
-               "bundled": bool(bundled), "signed_in": bool(self._secrets().get("session")), "role": st.get("role"),
+        url, anon = self._server()
+        out = {"url": url, "configured": bool(url and anon), "bundled": bool(_bundled_team()), "signed_in": bool(self._secrets().get("session")), "role": st.get("role"),
                **{k: t.get(k) for k in ("email", "pic", "name")}, "needs_key": bool(t.get("needs_key"))}
         if self._member:
             out["opened"] = {k: self._member["run"].get(k) for k in ("file", "published_by", "published_at")}
@@ -285,31 +294,31 @@ class Api:
         return self.team_info()
 
     @safe
-    def team_send_code(self, email: str) -> dict:
-        t = self._team()
-        if not t.get("url"):
-            raise ValueError("Nhập Supabase URL và anon key trước")
-        if not EMAIL_RE.fullmatch(email.strip()):
-            raise ValueError("Email không hợp lệ")
-        Supabase(t["url"], t["anon"], opener=self._sb_opener).send_code(email)
-        return {"sent": True}
-
-    @safe
-    def team_verify(self, email: str, code: str) -> dict:
-        t, email = self._team(), email.strip().lower()
-        sb = Supabase(t["url"], t["anon"], opener=self._sb_opener)
-        refresh = sb.verify(email, code)
+    def team_sign_in(self, email: str, password: str) -> dict:
+        url, anon = self._server()
+        if not url:
+            raise ValueError("App chưa có máy chủ nhóm – cập nhật app lên bản mới nhất")
+        email = email.strip().lower()
+        sb = Supabase(url, anon, opener=self._sb_opener)
+        refresh = sb.sign_in(email, password)
         row = sb.member(email)
         if not row or not row["active"]:
             raise PermissionError("Tài khoản này chưa được Lead kích hoạt")
         self._save_secrets({**self._secrets(), "session": {"email": email, "refresh": refresh}})
-        self._sb_cache = ((t["url"], t["anon"]), time.monotonic(), sb)
+        self._sb_cache = ((url, anon), time.monotonic(), sb)
         needs_key = self._register_device(sb, row, email)
         self._member = None
-        self._store.save_settings({"role": row["role"], "team": {**t, "email": email, "pic": row.get("pic"),
+        self._store.save_settings({"role": row["role"], "team": {**self._team(), "email": email, "pic": row.get("pic"),
                                                                   "name": row.get("name"), "needs_key": needs_key}})
         self._lead_signs(sb)
         return self.team_info()
+
+    @safe
+    def team_change_password(self, password: str) -> dict:
+        if len(password or "") < 10:
+            raise ValueError("Mật khẩu cần ít nhất 10 ký tự")
+        self._sb().change_password(password)
+        return {"ok": True}
 
     @safe
     def team_sign_out(self) -> dict:
@@ -325,10 +334,6 @@ class Api:
         return self.team_info()
 
     @safe
-    def supabase_sql(self, lead_email: str = "") -> dict:
-        return {"sql": setup_sql(lead_email or self._team().get("email") or "")}
-
-    @safe
     @lead_only
     def members(self) -> dict:
         rows = self._sb().members()
@@ -340,26 +345,39 @@ class Api:
     @safe
     @lead_only
     def add_member(self, email: str, name: str, pic: str, role: str = "member") -> dict:
+        """Create a login + member row (inside Supabase). Returns the first password for the Lead to hand over."""
         email = email.strip().lower()
         if not EMAIL_RE.fullmatch(email):
             raise ValueError("Email không hợp lệ")
         if role not in ("lead", "member") or (role == "member" and not pic.strip()):
             raise ValueError("Thành viên cần có PIC")
-        self._sb().add_member({"email": email, "role": role, "name": name.strip() or email,
-                               "pic": pic.strip() if role == "member" else None})
-        return self.members()
+        password = _new_password()
+        self._sb().admin("create", email=email, name=name.strip() or email, role=role,
+                         pic=pic.strip() if role == "member" else None, password=password)
+        return {**self.members(), "password": password}
+
+    @safe
+    @lead_only
+    def reset_password(self, email: str) -> dict:
+        password = _new_password()
+        self._sb().admin("reset_password", email=email, password=password)
+        return {"password": password}
 
     @safe
     @lead_only
     def update_member(self, email: str, fields: dict) -> dict:
-        clean = {k: v for k, v in fields.items() if k in ("pic", "name", "role", "active")}
-        self._sb().update_member(email, clean)
+        sb = self._sb()
+        if "active" in fields:
+            sb.admin("set_active", email=email, active=bool(fields["active"]))
+        clean = {k: v for k, v in fields.items() if k in ("pic", "name", "role")}
+        if clean:
+            sb.update_member(email, clean)
         return self.members()
 
     @safe
     @lead_only
     def remove_member(self, email: str) -> dict:
-        self._sb().delete_member(email)
+        self._sb().admin("delete", email=email)
         return self.members()
 
     @safe

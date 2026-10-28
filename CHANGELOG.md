@@ -4,17 +4,15 @@ Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản p
 
 ## v0.1.7 – 28/10/2026
 ### Mới
-- **Đăng nhập nhóm bằng email** (Supabase): nhập email → nhận mã 6 số → đăng nhập. Không mật khẩu, không phải gửi mã qua lại.
-- **Lead tạo và quản lý tài khoản PIC** ở Cài đặt → Nhóm: email, tên, PIC, vai trò (Lead / Thành viên); đổi PIC, khoá, xoá có hiệu lực ngay. Chỉ email được Lead thêm mới đăng nhập được.
-- **Thành viên chỉ xem, và chỉ phần PIC của mình:** không chạy, không sửa, không góp ý, không Copy Message, không xuất Excel. Dashboard chỉ có điểm và xu hướng của chính họ (không có bảng xếp hạng). Quyền được máy chủ Supabase kiểm tra, không chỉ ẩn nút trong app.
+- **Tài khoản nhóm có sẵn trong app** – không ai phải cài đặt máy chủ. Đăng nhập bằng email + mật khẩu.
+- **Lead tạo và quản lý tài khoản PIC** ở Cài đặt → Nhóm: email, tên, PIC, vai trò (Lead / Thành viên). App tạo mật khẩu đầu tiên để Lead gửi cho người đó (không gửi email). Đặt lại mật khẩu, khoá / mở khoá, xoá, đổi PIC – có hiệu lực ngay. Ai cũng tự đổi được mật khẩu của mình.
+- **Thành viên chỉ xem, và chỉ phần PIC của mình:** không chạy, không sửa, không góp ý, không Copy Message, không xuất Excel. Dashboard chỉ có điểm và xu hướng của chính họ (không có bảng xếp hạng). Quyền do máy chủ kiểm tra, không chỉ ẩn nút.
 - **Tải lên cho nhóm:** Lead xem lại kết quả rồi bấm tải lên. Mỗi PIC một file `.pmkt` riêng, nén + mã hoá chỉ cho người của PIC đó, ký bởi Lead; tên theo ngày giờ, không bao giờ ghi đè. Thành viên bấm **Làm mới** rồi chọn báo cáo.
-- Xuất / nhập **khoá Lead** (file có mật khẩu) để chuyển sang máy khác.
+- Xuất / nhập **khoá Lead** (file có mật khẩu) để chuyển Lead sang máy khác.
 - **Tiếng Anh / Tiếng Việt:** nút EN/VI trên thanh trên cùng. Ngôn ngữ tin nhắn Claude viết cho PIC vẫn chỉnh ở Cài đặt → Văn phong.
 - **Tiến trình chi tiết + thời gian còn lại:** từng PIC hiện bước đang làm (viết nháp → kiểm tra số liệu → biên tập) và số phần đã xong; thời gian còn lại học từ các lần chạy trước.
 ### Thay đổi
 - Chạy xong không tự chia sẻ – Lead duyệt rồi mới tải lên.
-### Lưu ý
-- Lead cần thiết lập Supabase một lần (hướng dẫn trong hộp thoại đăng nhập → "Lead lần đầu").
 
 ## v0.1.6 – 27/10/2026
 Bản này gồm toàn bộ thay đổi của v0.1.4 và v0.1.5 (hai bản đó build lỗi nên chưa từng phát hành).
