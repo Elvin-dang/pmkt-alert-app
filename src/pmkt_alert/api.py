@@ -1,7 +1,9 @@
 """Everything the UI can call (exposed to JavaScript via pywebview's js_api).
 Every public method returns JSON-serializable data and never raises."""
+import base64
 import functools
 import json
+import os
 import threading
 import traceback
 from datetime import date, datetime
@@ -17,6 +19,12 @@ from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
 from .evidence import evidence
 from .export import export_pic
+from .identity import invite_code, new_lead_key, private_bytes, private_from_bytes, protect, public_key_from_invite, unprotect
+from .package import EXT, PackageError, derive_key
+from .package import build as build_package
+from .package import read as read_package
+from .share import pack_run, unpack_run
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from .loaders import ROLES, TRACKER_REQUIRED, TRACKER_SHEETS, InputError, detect_inputs, input_files, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
 from .pipeline import result_to_json, run_rules
@@ -35,12 +43,27 @@ def always_fail(prompt, schema):
     raise ClaudeError("Claude Code chưa sẵn sàng")
 
 
+LEAD_ONLY = "Chỉ Lead được làm việc này – bạn đang ở chế độ Thành viên (chỉ xem)"
+MEMBER_SETTINGS = {"language", "my_pic", "share_folder", "auto_update_check", "last_seen_version"}
+MIN_PASSPHRASE = 12
+
+
+def lead_only(fn):
+    """Refused in Member mode (enforced here, not only hidden in the UI)."""
+    @functools.wraps(fn)
+    def wrapper(self, *a, **k):
+        if self._role() == "member":
+            raise PermissionError(LEAD_ONLY)
+        return fn(self, *a, **k)
+    return wrapper
+
+
 def safe(fn):
     @functools.wraps(fn)
     def wrapper(self, *a, **k):
         try:
             return fn(self, *a, **k)
-        except (InputError, LogicError, ClaudeError, ValueError, RuntimeError) as e:
+        except (InputError, LogicError, ClaudeError, ValueError, RuntimeError, PermissionError, PackageError) as e:
             return {"error": str(e)}
         except Exception as e:  # never let a traceback reach the UI
             self._log(traceback.format_exc())
@@ -59,6 +82,7 @@ class Api:
         self._running = False
         self._inputs = None
         self._paths: list[str] = []
+        self._member: dict | None = None  # Member mode: the opened .pmkt (run, inputs, logic path, file)
 
     # ------------------------------------------------------------- helpers
     def _with_note(self, ask_fn):
@@ -77,7 +101,149 @@ class Api:
         if self._window is not None:
             self._window.evaluate_js(f"window.onProgress && onProgress({json.dumps(step)}, {json.dumps(state)}, {json.dumps(detail)})")
 
+    # ------------------------------------------------------------- roles
+    def _role(self) -> str | None:
+        return self._store.get_settings().get("role")
+
+    def _secrets(self) -> dict:
+        p = self._store.base / "secrets.bin"
+        return json.loads(unprotect(p.read_bytes())) if p.exists() else {}
+
+    def _save_secrets(self, d: dict) -> None:
+        p = self._store.base / "secrets.bin"
+        p.write_bytes(protect(json.dumps(d).encode("utf-8")))
+        try:
+            p.chmod(0o600)
+        except OSError:
+            pass
+
+    def _lead_key(self):
+        raw = self._secrets().get("lead_key")
+        if not raw:
+            raise PermissionError("Máy này chưa có khoá Lead")
+        return private_from_bytes(base64.b64decode(raw))
+
+    def _member_open(self, path: Path | None = None) -> dict:
+        """Open a .pmkt (default: the newest in the shared folder) with the team passphrase + Lead's code."""
+        folder = self._store.get_settings().get("share_folder") or ""
+        if path is None:
+            files = sorted(Path(folder).glob(f"*{EXT}"), key=lambda f: f.stat().st_mtime, reverse=True) if folder else []
+            if not files:
+                raise ValueError("Chưa có file .pmkt nào trong thư mục chia sẻ – chờ Lead chạy dữ liệu")
+            path = files[0]
+        pub = public_key_from_invite(self._store.get_settings().get("lead_invite") or "")
+        manifest, files = read_package(Path(path).read_bytes(), self._secrets().get("passphrase", ""), pub)
+        run, inputs, logic_bytes, logic_name = unpack_run(files)
+        logic_path = self._store.base / "shared" / logic_name
+        logic_path.parent.mkdir(parents=True, exist_ok=True)
+        logic_path.write_bytes(logic_bytes)
+        self._member = {"run": {**run, "published_by": manifest.get("by"), "published_at": manifest.get("at"),
+                                "file": Path(path).name}, "inputs": inputs, "logic_path": logic_path, "path": Path(path)}
+        return self._member
+
+    def _member_state(self) -> dict:
+        return self._member or self._member_open()
+
+    def _publish(self, run_id: str) -> str | None:
+        """Lead: write the run as an encrypted, signed .pmkt into the shared folder."""
+        folder = self._store.get_settings().get("share_folder")
+        secrets = self._secrets()
+        if self._role() != "lead" or not folder or not secrets.get("lead_key"):
+            return None
+        run = self._store.load_run(run_id)
+        logic_path = next((p for v, p in self._store.logic_versions() if v == run["result"]["logic_version"]),
+                          self._store.active_logic())
+        blob = build_package(pack_run(run, self._ensure_inputs(), logic_path),
+                             {"by": self._store.get_settings().get("lead_name") or "Lead", "at": datetime.now().isoformat(timespec="seconds"),
+                              "as_of": run["result"]["as_of"], "run_id": run_id, "app": __version__},
+                             secrets["passphrase"], self._lead_key())
+        name = f"PMKT-Alert_{run['result']['as_of']}_{run_id}{EXT}"
+        Path(folder).mkdir(parents=True, exist_ok=True)
+        tmp = Path(folder) / (name + ".tmp")
+        tmp.write_bytes(blob)
+        os.replace(tmp, Path(folder) / name)
+        return name
+
+    @safe
+    def role_info(self) -> dict:
+        st, sec = self._store.get_settings(), self._secrets()
+        out = {"role": st.get("role"), "share_folder": st.get("share_folder") or "", "my_pic": st.get("my_pic") or "",
+               "has_passphrase": bool(sec.get("passphrase"))}
+        if st.get("role") == "lead" and sec.get("lead_key"):
+            out["invite_code"] = invite_code(self._lead_key().public_key())
+        if st.get("role") == "member":
+            out["lead_invite"] = st.get("lead_invite")
+            if self._member:
+                out["opened"] = {k: self._member["run"].get(k) for k in ("file", "published_by", "published_at")}
+        return out
+
+    @safe
+    def setup_lead(self, passphrase: str, share_folder: str = "", lead_name: str = "") -> dict:
+        if len(passphrase or "") < MIN_PASSPHRASE:
+            raise ValueError(f"Mật khẩu nhóm cần ít nhất {MIN_PASSPHRASE} ký tự")
+        key = new_lead_key()
+        self._save_secrets({"passphrase": passphrase, "lead_key": base64.b64encode(private_bytes(key)).decode()})
+        self._store.save_settings({"role": "lead", "share_folder": share_folder, "lead_name": lead_name or "Lead"})
+        return {**self.role_info(), "invite_code": invite_code(key.public_key())}
+
+    @safe
+    def setup_member(self, invite: str, passphrase: str, my_pic: str, share_folder: str) -> dict:
+        public_key_from_invite(invite)  # validates the code (checksum)
+        old_settings, old_secrets = self._store.get_settings(), self._secrets()
+        self._store.save_settings({"role": "member", "lead_invite": invite.strip(), "my_pic": my_pic, "share_folder": share_folder})
+        self._save_secrets({"passphrase": passphrase})
+        try:
+            opened = bool(list(Path(share_folder).glob(f"*{EXT}"))) and bool(self._member_open())
+        except Exception:
+            self._store.save_settings({k: old_settings.get(k) for k in ("role", "lead_invite", "my_pic", "share_folder")})
+            self._save_secrets(old_secrets)
+            self._member = None
+            raise
+        return {**self.role_info(), "opened": opened}
+
+    @safe
+    @lead_only
+    def change_passphrase(self, new: str) -> dict:
+        if len(new or "") < MIN_PASSPHRASE:
+            raise ValueError(f"Mật khẩu nhóm cần ít nhất {MIN_PASSPHRASE} ký tự")
+        self._save_secrets({**self._secrets(), "passphrase": new})
+        return {"ok": True}
+
+    @safe
+    @lead_only
+    def export_lead_key(self, path: str, password: str) -> dict:
+        if len(password or "") < 8:
+            raise ValueError("Mật khẩu file chuyển quyền cần ít nhất 8 ký tự")
+        salt, nonce = os.urandom(16), os.urandom(12)
+        ct = AESGCM(derive_key(password, salt)).encrypt(nonce, private_bytes(self._lead_key()), b"PMKTKEY1")
+        Path(path).write_bytes(b"PMKTKEY1" + salt + nonce + ct)
+        return {"path": path}
+
+    @safe
+    def import_lead_key(self, path: str, password: str, passphrase: str, share_folder: str) -> dict:
+        blob = Path(path).read_bytes()
+        if not blob.startswith(b"PMKTKEY1"):
+            raise ValueError("Không phải file chuyển quyền Lead (.pmktkey)")
+        salt, nonce, ct = blob[8:24], blob[24:36], blob[36:]
+        try:
+            raw = AESGCM(derive_key(password, salt)).decrypt(nonce, ct, b"PMKTKEY1")
+        except Exception:
+            raise ValueError("Sai mật khẩu file chuyển quyền") from None
+        if len(passphrase or "") < MIN_PASSPHRASE:
+            raise ValueError(f"Mật khẩu nhóm cần ít nhất {MIN_PASSPHRASE} ký tự")
+        self._save_secrets({"passphrase": passphrase, "lead_key": base64.b64encode(raw).decode()})
+        self._store.save_settings({"role": "lead", "share_folder": share_folder})
+        return {**self.role_info(), "invite_code": invite_code(private_from_bytes(raw).public_key())}
+
+    @safe
+    def open_package(self, path: str | None = None) -> dict:
+        if self._role() != "member":
+            raise PermissionError("Chỉ dùng ở chế độ Thành viên")
+        return self._member_open(Path(path) if path else None)["run"]
+
     def _latest(self) -> dict:
+        if self._role() == "member":
+            return self._member_state()["run"]
         runs = self._store.list_runs()
         if not runs:
             raise ValueError("Chưa có lần chạy nào")
@@ -98,6 +264,8 @@ class Api:
         return load_logic(active, fallback=fallback)
 
     def _ensure_inputs(self):
+        if self._role() == "member":
+            return self._member_state()["inputs"]
         if self._inputs is None:
             paths = self._paths or self._store.get_settings().get("last_inputs", {}).get("paths", [])
             if not paths:
@@ -179,6 +347,7 @@ class Api:
         return {"ok": True}
 
     @safe
+    @lead_only
     def run(self, paths: list[str], as_of: str | None = None, use_claude: bool = True) -> dict:
         self._running = True
         try:
@@ -252,7 +421,7 @@ class Api:
                           logic_eval=evaluate_logic(logic_issues, logic, ask_fn=always_fail))
                 self._store.update_run_ai(run_id, ai)
                 self._progress("claude", "warn", "Đã dừng")
-                return {"run_id": run_id, "result": rj, "ai": ai, "stopped": True}
+                return {"run_id": run_id, "result": rj, "ai": ai, "stopped": True, "published": self._publish(run_id)}
             self._progress("logic_eval", "running", "Claude đánh giá các vấn đề trong file logic")
             ai["logic_eval"] = evaluate_logic(logic_issues, logic, ask_fn=self._ask)
             self._progress("logic_eval", "done", ai["logic_eval"]["summary"][:120])
@@ -262,7 +431,7 @@ class Api:
             except Exception:  # a failed backtest must not hide the run
                 self._log(traceback.format_exc())
             self._progress("claude", "done" if ai["claude_ok"] else "warn", ai["error"] or "")
-        return {"run_id": run_id, "result": rj, "ai": ai, "stopped": False}
+        return {"run_id": run_id, "result": rj, "ai": ai, "stopped": False, "published": self._publish(run_id)}
 
     @safe
     def evidence(self, unit_id: str, run_id: str | None = None) -> dict:
@@ -270,19 +439,27 @@ class Api:
         if not run:
             raise ValueError("Không tìm thấy lần chạy")
         rj = run["result"]
-        logic_path = next((p for v, p in self._store.logic_versions() if v == rj["logic_version"]), None) \
-            or self._store.active_logic()
+        logic_path = (self._member_state()["logic_path"] if self._role() == "member" else
+                      next((p for v, p in self._store.logic_versions() if v == rj["logic_version"]), None)
+                      or self._store.active_logic())
         ev = evidence(self._ensure_inputs(), load_logic(logic_path), rj, unit_id)
         return {**ev, "files": rj.get("inputs", {}).get("files", {}), "logic_file": Path(logic_path).name,
                 "as_of": rj["as_of"]}
 
     def _run_or_latest(self, run_id: str | None) -> dict:
+        if self._role() == "member":
+            return self._latest()
         run = self._store.load_run(run_id) if run_id else self._latest()
         if not run:
             raise ValueError("Không tìm thấy lần chạy")
         return run
 
     def _runs_history(self) -> list[dict]:
+        if self._role() == "member":
+            res = self._latest()["result"]
+            return [{"run_id": self._latest().get("file"), "as_of": res.get("as_of"),
+                     "by_pic": {d["pic"]: {"high": d["pl_high"] + d["camp_high"], "excess": round(d["excess_new"], 2)}
+                                for d in res.get("digest", [])}}]
         out = []
         for r in reversed(self._store.list_runs()[:30]):
             res = (self._store.load_run(r["run_id"]).get("result") or {})
@@ -300,6 +477,7 @@ class Api:
                 "runs": self._runs_history(), "team_review": run.get("team_review")}
 
     @safe
+    @lead_only
     def save_score_weights(self, weights: dict) -> dict:
         keys = {m["key"] for m in METRICS}
         clean = {k: max(0.0, float(v)) for k, v in weights.items() if k in keys}
@@ -307,6 +485,7 @@ class Api:
         return {"weights": clean}
 
     @safe
+    @lead_only
     def team_review(self, run_id: str | None = None) -> dict:
         run = self._run_or_latest(run_id)
         sc = scorecard(run["result"], self._store.get_settings().get("score_weights") or {})
@@ -329,6 +508,8 @@ class Api:
 
     @safe
     def results(self, run_id: str | None = None) -> dict:
+        if self._role() == "member":
+            return self._member_open(Path(self._store.get_settings()["share_folder"]) / run_id)["run"] if run_id else self._latest()
         return self._store.load_run(run_id) if run_id else self._latest()
 
     @safe
@@ -350,6 +531,7 @@ class Api:
 
     # ------------------------------------------------------------- feedback & review
     @safe
+    @lead_only
     def submit_feedback(self, item: dict) -> dict:
         run = self._store.load_run(item["run_id"]) if item.get("run_id") else self._latest()
         if not run:
@@ -368,8 +550,11 @@ class Api:
 
     @safe
     def review(self) -> dict:
-        runs = self._store.list_runs()
-        run = self._store.load_run(runs[0]["run_id"]) if runs else {}
+        if self._role() == "member":
+            run = self._latest()
+        else:
+            runs = self._store.list_runs()
+            run = self._store.load_run(runs[0]["run_id"]) if runs else {}
         res, ai = run.get("result") or {}, run.get("ai") or {}
         issues = res.get("logic_issues") or []
         logic_eval = ai.get("logic_eval")
@@ -380,6 +565,7 @@ class Api:
                 "logic_file": res.get("logic_file")}
 
     @safe
+    @lead_only
     def set_proposal(self, pid: str, status: str) -> dict:
         if status not in ("approved", "rejected", "pending"):
             raise ValueError("Trạng thái không hợp lệ")
@@ -387,6 +573,7 @@ class Api:
         return {"proposals": self._store.proposals()}
 
     @safe
+    @lead_only
     def apply_proposals(self) -> dict:
         out = apply_approved(self._store, self._logic())
         self._ensure_inputs()
@@ -399,18 +586,26 @@ class Api:
         return {"lessons": self._store.lessons()}
 
     @safe
+    @lead_only
     def delete_lesson(self, lid: str) -> dict:
         self._store.delete_lesson(lid)
         return {"lessons": self._store.lessons()}
 
     @safe
     def history(self) -> dict:
+        if self._role() == "member":
+            folder = self._store.get_settings().get("share_folder") or ""
+            files = sorted(Path(folder).glob(f"*{EXT}"), key=lambda f: f.stat().st_mtime, reverse=True) if folder else []
+            return {"runs": [{"run_id": f.name, "as_of": f.name.split("_")[1] if f.name.count("_") >= 2 else None,
+                              "logic_version": None, "alert_count": None, "feedback_count": None} for f in files[:30]],
+                    "logic_versions": []}
         active = self._store.active_logic()
         return {"runs": self._store.list_runs(),
                 "logic_versions": [{"version": v, "name": p.name, "active": p == active}
                                    for v, p in self._store.logic_versions()]}
 
     @safe
+    @lead_only
     def set_active_logic(self, version: int) -> dict:
         self._store.set_active_logic(int(version))
         return self.history()
@@ -421,16 +616,19 @@ class Api:
         return self._store.get_style()
 
     @safe
+    @lead_only
     def save_style(self, d: dict) -> dict:
         self._store.save_style(d)
         return self._store.get_style()
 
     @safe
+    @lead_only
     def add_style_sample(self, text: str) -> dict:
         self._store.add_style_sample(text)
         return self._store.get_style()
 
     @safe
+    @lead_only
     def preview_style(self) -> dict:
         run = self._latest()
         d = max(run["result"]["digest"], key=lambda x: x["camp_high"] + x["pl_high"])
@@ -439,11 +637,13 @@ class Api:
         return {"slack": out["slack"], "pic": d["pic"]}
 
     @safe
+    @lead_only
     def save_pic_address(self, pic: str, d: dict) -> dict:
         self._store.set_pic_address(pic, d)
         return self._store.get_style()
 
     @safe
+    @lead_only
     def rewrite_message(self, pic: str, run_id: str | None = None) -> dict:
         run = self._store.load_run(run_id) if run_id else self._latest()
         if not run:
@@ -466,6 +666,7 @@ class Api:
         return self._store.usage()
 
     @safe
+    @lead_only
     def prune_memory(self) -> dict:
         deleted = self._store.prune()
         return {"deleted": deleted, **self._store.usage()}
@@ -476,6 +677,8 @@ class Api:
 
     @safe
     def save_settings(self, d: dict) -> dict:
+        if self._role() == "member" and set(d) - MEMBER_SETTINGS:
+            raise PermissionError(LEAD_ONLY)
         self._store.save_settings(d)
         return self._store.get_settings()
 
@@ -527,6 +730,7 @@ class Api:
         return {"ok": True}
 
     @safe
+    @lead_only
     def export(self, pic: str, path: str | None = None, run_id: str | None = None) -> dict:
         run = self._store.load_run(run_id) if run_id else self._latest()
         if not run:
