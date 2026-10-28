@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("provision", Path(__file__).parents[1] / "scripts" / "provision_supabase.py")
@@ -44,6 +45,8 @@ def test_provision_new_project(tmp_path, monkeypatch):
     auth = next(b for m, p, _, b in api.calls if p.endswith("/config/auth"))
     assert auth["disable_signup"] is True
     login = (tmp_path / "PMKT-Lead-login.txt").read_text()
-    assert "lead@co.test" in login and oct((tmp_path / "PMKT-Lead-login.txt").stat().st_mode)[-3:] == "600"
+    assert "lead@co.test" in login
+    if os.name != "nt":  # Windows has no POSIX file modes (chmod is a no-op there)
+        assert oct((tmp_path / "PMKT-Lead-login.txt").stat().st_mode)[-3:] == "600"
     link = next(b for m, p, _, b in api.calls if "pmkt_members?email=eq.lead@co.test" in p)
     assert link == {"user_id": "uid-1"}
