@@ -28,6 +28,7 @@ function toast(msg, err = false) {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), err ? 8000 : 4000);
 }
+const raw = (v) => `<span data-no-i18n>${esc(v)}</span>`;  // Claude / user text: never run through the UI translation
 function sev(s) { return s ? `<span class="sev ${esc(s)}">${esc(s)}</span>` : ""; }
 function fbBtn(unit, label, done) {
   return `<button class="fb${done ? " done" : ""}" data-unit="${esc(unit)}" data-label="${esc(label)}"><svg class="i" aria-hidden="true"><use href="#flag"/></svg>${done ? "Đã góp ý" : "Chưa hợp lý"}</button>`;
@@ -67,6 +68,12 @@ function go(id) {
   if (id === "settings") loadSettings();
 }
 function applyTheme(t) { if (t) document.documentElement.dataset.theme = t; }
+function applyLang(l) {
+  I18N.set(l);
+  $("#lang").textContent = I18N.lang === "en" ? "VI" : "EN";
+  $("#lang").title = I18N.lang === "en" ? "Chuyển sang tiếng Việt" : "Switch to English";
+  $("#su-lang").textContent = I18N.lang === "en" ? "Tiếng Việt" : "English";
+}
 
 // ------------------------------------------------------------------ Claude status
 async function checkClaude() {
@@ -90,7 +97,7 @@ async function checkClaude() {
 }
 async function installClaude() {
   const cmd = navigator.userAgent.includes("Windows") ? "irm https://claude.ai/install.ps1 | iex" : "curl -fsSL https://claude.ai/install.sh | bash";
-  if (!confirm(`Cài Claude Code bằng trình cài đặt chính thức của Anthropic?\n\n${cmd}\n\nCần kết nối Internet, mất khoảng 1–2 phút.`)) return;
+  if (!confirm(I18N.t(`Cài Claude Code bằng trình cài đặt chính thức của Anthropic?\n\n${cmd}\n\nCần kết nối Internet, mất khoảng 1–2 phút.`))) return;
   const b = $("#cc-install");
   b.disabled = true;
   b.innerHTML = '<span class="spin"></span> Đang cài…';
@@ -142,16 +149,45 @@ async function useInputs(paths) {
   renderSlots();
 }
 window.onDropPaths = (paths) => { go("run"); useInputs(paths); };
-const STEPS = { load: "Đọc & làm sạch data", logic: "Kiểm tra file logic", logic_eval: "Claude đánh giá lỗi file logic", rules: "Tầng 0–4 – Data check · Pacing · Trend · Campaign · Action log", claude: "Claude – Insight · To-do · Tin nhắn · Rà soát logic" };
+const STEPS = { load: "Đọc & làm sạch data", logic: "Kiểm tra file logic", rules: "Tầng 0–4 – Data check · Pacing · Trend · Campaign · Action log", claude: "Claude – Insight · To-do · Tin nhắn", review: "Claude rà soát logic", logic_eval: "Claude đánh giá lỗi file logic" };
 const STEP_STATE = {};
-window.onProgress = (step, state, detail) => {
+let RUN_T0 = 0, ETA = null, ETA_AT = 0, ETA_TIMER = null;
+function fmtSecs(s) {
+  s = Math.max(0, Math.round(s));
+  const [sec, min] = I18N.lang === "en" ? ["s", "min"] : ["giây", "phút"];
+  return s < 60 ? `${s} ${sec}` : `${Math.floor(s / 60)} ${min} ${String(s % 60).padStart(2, "0")} ${sec}`;
+}
+function renderEta() {
+  const el = $("#eta");
+  if (!el) return;
+  const elapsed = (Date.now() - RUN_T0) / 1000;
+  if (ETA == null) { el.textContent = `Đã chạy ${fmtSecs(elapsed)}`; return; }
+  const left = Math.max(0, ETA - (Date.now() - ETA_AT) / 1000);
+  const share = elapsed + left > 0 ? Math.min(99, (elapsed / (elapsed + left)) * 100) : 0;
+  el.innerHTML = `Đã chạy ${fmtSecs(elapsed)} · <b>còn khoảng ${left < 1 ? "vài giây" : fmtSecs(left)}</b>`;
+  $("#eta-bar").style.width = share + "%";
+}
+function stepLine(k, v, sub) {
+  const badge = v.state === "running" ? '<span class="spin" aria-label="đang chạy"></span>' : `<span class="sev ${v.state === "done" ? "OK" : "MED"}">${v.state === "done" ? "XONG" : "CẢNH BÁO"}</span>`;
+  const label = k.startsWith("pic:") ? k.slice(4) : STEPS[k] || k;
+  return `<div class="check" ${sub ? 'style="padding-left:22px"' : ""}>${badge}${esc(label)} <span class="muted">${v.detail ? "— " + esc(v.detail) : ""}</span></div>`;
+}
+window.onProgress = (step, state, detail, extra) => {
+  if (!RUN_T0) RUN_T0 = Date.now();
   STEP_STATE[step] = { state, detail };
-  $("#progress").innerHTML = Object.entries(STEP_STATE).map(([k, v]) => {
-    const badge = v.state === "running" ? '<span class="spin" aria-label="đang chạy"></span>' : `<span class="sev ${v.state === "done" ? "OK" : "MED"}">${v.state === "done" ? "XONG" : "CẢNH BÁO"}</span>`;
-    return `<div class="check">${badge}${esc(STEPS[k] || k)} <span class="muted">— ${esc(v.detail)}</span></div>`;
-  }).join("");
+  if (extra && extra.eta != null) { ETA = extra.eta; ETA_AT = Date.now(); }
+  const subs = Object.keys(STEP_STATE).filter((k) => k.startsWith("pic:") || k === "review");
+  const n = subs.length, fin = subs.filter((k) => STEP_STATE[k].state !== "running").length;
+  $("#progress").innerHTML = `<div class="prog" aria-hidden="true"><span id="eta-bar"></span></div><p class="muted" id="eta" style="font-size:12px;margin:0 0 6px" role="status"></p>` +
+    Object.entries(STEP_STATE).filter(([k]) => !subs.includes(k)).map(([k, v]) =>
+      stepLine(k, k === "claude" && n ? { ...v, detail: `${fin}/${n} phần xong · ${v.detail}` } : v, false) +
+      (k === "claude" ? subs.map((s) => stepLine(s, STEP_STATE[s], true)).join("") : "")).join("");
+  renderEta();
 };
 function runningUi(on) {
+  clearInterval(ETA_TIMER);
+  if (on) { RUN_T0 = Date.now(); ETA = null; ETA_TIMER = setInterval(renderEta, 1000); }
+  else if ($("#eta")) { $("#eta").textContent = `Xong sau ${fmtSecs((Date.now() - RUN_T0) / 1000)}`; $("#eta-bar").style.width = "100%"; }
   $("#run-btn").classList.toggle("hidden", on);
   $("#stop-btn").classList.toggle("hidden", !on);
   $("#stop-btn").disabled = false;
@@ -336,7 +372,7 @@ function todosHtml(mine) {
   const list = mine.todos.filter((t) => (!S.f.todoSev || t.severity === S.f.todoSev) && (!S.f.todoDue || t.due === S.f.todoDue));
   return `<div class="filters"><select id="f-todo-sev" aria-label="Mức">${opts([["HIGH", "HIGH"], ["MED", "MED"]], S.f.todoSev, "Mọi mức")}</select>
     <select id="f-todo-due" aria-label="Hạn">${opts([["today", "Hôm nay"], ["week", "Trong tuần"]], S.f.todoDue, "Mọi hạn")}</select></div>`
-    + (list.length ? list.map((t) => `<div class="todo">${sev(t.severity)}<div><div class="t">${esc(t.title)}</div><div class="d">${esc(t.detail)}</div></div>
+    + (list.length ? list.map((t) => `<div class="todo">${sev(t.severity)}<div><div class="t">${raw(t.title)}</div><div class="d">${raw(t.detail)}</div></div>
     <div class="r"><span class="muted">${t.due === "today" ? "Hôm nay" : "Trong tuần"}</span><span class="acts">${evBtn(t.refs || [])}${fbBtn((t.refs || [])[0] || "todo:" + t.title, "To-do: " + t.title)}</span></div></div>`).join("") : '<div class="empty">Không có to-do khớp bộ lọc.</div>')
     + (mine.dropped ? `<p class="muted" style="font-size:12px">Đã bỏ ${mine.dropped} câu của Claude vì số liệu không khớp dữ liệu.</p>` : "");
 }
@@ -376,7 +412,7 @@ async function showEvidence() {
 function insightsHtml(mine) {
   const list = !mine || (mine.error && !mine.insights.length) ? claudeMissing(mine)
     : mine.insights.length ? mine.insights.map((i) => `<div class="insight"><span class="ai"><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Claude</span>
-      <div>${esc(i.text)}</div><div class="src">${evBtn(i.refs || [])} ${fbBtn((i.refs || [])[0] || "insight", "Insight: " + i.text.slice(0, 60))}</div></div>`).join("")
+      <div>${raw(i.text)}</div><div class="src">${evBtn(i.refs || [])} ${fbBtn((i.refs || [])[0] || "insight", "Insight: " + i.text.slice(0, 60))}</div></div>`).join("")
     : '<div class="empty">Không có insight.</div>';
   const addr = ((S.style || {}).pic_address || {})[S.pic] || {};
   const given = String(S.pic || "").trim().split(/\s+/).pop() || "";
@@ -412,7 +448,7 @@ async function copySlack() {
   if (!text) { toast("Chưa có tin nhắn."); return; }
   copyText(text);
   toast("Đã copy tin nhắn.");
-  if (ta && text.trim() !== (S.origSlack || "").trim() && confirm("Lưu bản sửa làm mẫu văn phong?")) {
+  if (ta && text.trim() !== (S.origSlack || "").trim() && confirm(I18N.t("Lưu bản sửa làm mẫu văn phong?"))) {
     if (!bad(await api.add_style_sample(text))) toast("Đã lưu mẫu văn phong.");
   }
 }
@@ -453,9 +489,9 @@ async function loadReview() {
   const pending = r.proposals.filter((p) => p.status === "pending");
   const crit = (r.logic_eval?.items || []).filter((x) => x.verdict === "critical").length;
   $("#nav-review").textContent = pending.length + crit; $("#nav-review").classList.toggle("hidden", !(pending.length + crit));
-  const findings = r.findings.length ? r.findings.map((f) => `<div class="finding">${sev(f.severity === "INFO" ? "INFO" : f.severity)}<div><b>${esc(f.title)}</b><div class="muted">${esc(f.detail)}</div></div><span class="muted">${f.kind === "param" ? "Tham số" : "Rule mới"}</span></div>`).join("") : '<div class="empty">Chưa có phát hiện (cần chạy với Claude).</div>';
+  const findings = r.findings.length ? r.findings.map((f) => `<div class="finding">${sev(f.severity === "INFO" ? "INFO" : f.severity)}<div><b>${raw(f.title)}</b><div class="muted">${raw(f.detail)}</div></div><span class="muted">${f.kind === "param" ? "Tham số" : "Rule mới"}</span></div>`).join("") : '<div class="empty">Chưa có phát hiện (cần chạy với Claude).</div>';
   const fb = r.feedback.slice(-8).reverse();
-  const fbHtml = fb.length ? fb.map((f) => `<div class="finding"><span class="sev INFO">${esc(f.status)}</span><div><b>“${esc(f.text || f.issue)}”</b><div class="muted">${esc(f.label || f.unit_id)}</div></div><span class="muted">${esc((f.created || "").slice(0, 10))}</span></div>`).join("") : '<div class="empty">Chưa có góp ý.</div>';
+  const fbHtml = fb.length ? fb.map((f) => `<div class="finding"><span class="sev INFO">${esc(f.status)}</span><div><b>“${raw(f.text || f.issue)}”</b><div class="muted">${esc(f.label || f.unit_id)}</div></div><span class="muted">${esc((f.created || "").slice(0, 10))}</span></div>`).join("") : '<div class="empty">Chưa có góp ý.</div>';
   const props = r.proposals.filter((p) => p.status !== "applied").map((p) => `<tr><td>${esc(p.param_key || "Rule mới")}<div class="muted" style="font-size:12px">${esc(p.title || "")}</div></td>
     <td class="diff">${p.param_key ? `<span class="old">${esc(p.old)}</span> → <span class="new">${esc(p.new)}</span>` : "—"}</td><td class="muted">${esc(p.rationale)}</td>
     <td style="min-width:170px">${bar(p.backtest)}</td>
@@ -480,14 +516,14 @@ function logicCheckHtml(r) {
     return `<div class="finding"><span class="sev ${cls}">${label}</span><div>
       <b>${esc(i.label || i.key)}</b> <span class="muted num">${esc(i.cell || "chưa có dòng")}</span>
       <div class="muted" style="font-size:12px">${esc(i.message)}${i.value ? ` · giá trị trong file: <code>${esc(i.value)}</code>` : ""}${i.used != null && i.used_from ? ` · đang dùng <b class="num">${esc(i.used)}</b> (${esc(i.used_from)})` : ""}</div>
-      <div style="margin-top:4px">${esc(x.reason)}</div>
+      <div style="margin-top:4px">${raw(x.reason)}</div>
       ${x.fix ? `<div style="margin-top:4px"><b>Cách sửa:</b> ${esc(x.fix)}${x.suggested_value != null && x.suggested_value !== "" ? ` · gợi ý: <code>${esc(x.suggested_value)}</code>` : ""}</div>` : ""}
     </div><span></span></div>`;
   }).join("");
   return `<div class="card" style="margin-bottom:12px">
     <div style="display:flex;align-items:center;gap:8px"><h2 style="margin:0">Kiểm tra file logic</h2><span class="muted">${esc(r.logic_file || "")}</span><span style="flex:1"></span>
       <span class="ai">${ev?.by_claude ? '<svg class="i" aria-hidden="true"><use href="#spark"/></svg>Claude đánh giá' : "Đánh giá tự động (không có Claude)"}</span></div>
-    ${ev?.summary ? `<p style="margin:8px 0">${esc(ev.summary)}</p>` : ""}
+    ${ev?.summary ? `<p style="margin:8px 0">${raw(ev.summary)}</p>` : ""}
     ${items || '<p class="muted">Không có lỗi cần sửa.</p>'}
     ${unused.length ? `<details style="margin-top:8px"><summary class="muted" style="cursor:pointer;font-size:13px">${unused.length} tham số trong file mà app chưa dùng</summary>
       <table style="margin-top:6px"><tbody>${unused.map((i) => `<tr><td>${esc(i.label)}</td><td class="num muted">${esc(i.cell)}</td><td class="n">${esc(i.value ?? "")}</td></tr>`).join("")}</tbody></table></details>` : ""}
@@ -499,7 +535,7 @@ async function loadLessons() {
   const [l, h] = await Promise.all([api.lessons(), api.history()]);
   if (bad(l) || bad(h)) return;
   $("#f-lessons").textContent = `Bài học: ${l.lessons.length}`;
-  $("#lessons-list").innerHTML = l.lessons.length ? l.lessons.map((x, i) => `<div class="check"><span class="sev INFO">#${i + 1}</span><div>${esc(x.text)} <span class="muted">· ${esc((x.created || "").slice(0, 10))}</span></div>
+  $("#lessons-list").innerHTML = l.lessons.length ? l.lessons.map((x, i) => `<div class="check"><span class="sev INFO">#${i + 1}</span><div>${raw(x.text)} <span class="muted">· ${esc((x.created || "").slice(0, 10))}</span></div>
     <button class="btn sm ghost" data-lesson="${esc(x.id)}" aria-label="Xoá bài học" style="margin-left:auto"><svg class="i"><use href="#x"/></svg></button></div>`).join("") : '<div class="empty">Chưa có bài học.</div>';
   $("#versions").innerHTML = h.logic_versions.length ? `<div class="timeline">${h.logic_versions.map((v) => `<div class="ev"><b>Ver ${v.version}</b> ${v.active ? '<span class="sev OK">ĐANG DÙNG</span>' : `<button class="btn sm" data-version="${v.version}">Dùng bản này</button>`}<div class="muted">${esc(v.name)}</div></div>`).join("")}</div>` : '<div class="empty">Chưa có.</div>';
   $("#runs").innerHTML = h.runs.length ? `<table><thead><tr><th>Lần chạy</th><th>Ngày data</th><th>Logic</th><th class="n">Alert</th><th class="n">Góp ý</th></tr></thead><tbody>${h.runs.slice(0, 30).map((r) => `<tr class="expandable" data-run="${esc(r.run_id)}"><td class="num">${esc(r.run_id)}</td><td class="num">${ddmm(r.as_of)}</td><td>Ver ${esc(r.logic_version)}</td><td class="n">${r.alert_count}</td><td class="n">${r.feedback_count}</td></tr>`).join("")}</tbody></table>` : '<div class="empty">Chưa có.</div>';
@@ -611,6 +647,8 @@ async function install() {
 function wire() {
   wireDashboard();
   $$("nav button").forEach((b) => (b.onclick = () => go(b.dataset.go)));
+  $("#lang").onclick = () => { const l = I18N.lang === "en" ? "vi" : "en"; applyLang(l); store("lang", l); api.save_settings({ ui_lang: l }); if (S.db && $("#dashboard").classList.contains("on")) renderDashboard(); };
+  $("#su-lang").onclick = () => $("#lang").click();
   $("#theme").onclick = () => { const t = isDark() ? "light" : "dark"; applyTheme(t); store("theme", t); if (S.db && $("#dashboard").classList.contains("on")) renderDashboard(); };
   $("#cc-recheck").onclick = $("#cc-recheck2").onclick = checkClaude;
   $("#cc-install").onclick = installClaude;
@@ -673,7 +711,7 @@ function wire() {
   });
   $("#lessons").addEventListener("click", async (e) => {
     const l = e.target.closest("[data-lesson]");
-    if (l && confirm("Xoá bài học này?")) { if (!bad(await api.delete_lesson(l.dataset.lesson))) loadLessons(); return; }
+    if (l && confirm(I18N.t("Xoá bài học này?"))) { if (!bad(await api.delete_lesson(l.dataset.lesson))) loadLessons(); return; }
     const v = e.target.closest("[data-version]");
     if (v) { if (!bad(await api.set_active_logic(Number(v.dataset.version)))) { toast("Đã đổi phiên bản logic – chạy lại để áp dụng."); loadLessons(); } return; }
     const r = e.target.closest("[data-run]");
@@ -702,7 +740,7 @@ function wire() {
     if (!bad(await api.save_settings({ memory_limit_mb: mb, auto_prune: $("#mem-auto").checked }))) { toast("Đã lưu cài đặt bộ nhớ."); loadMemory(); }
   };
   $("#mem-prune").onclick = async () => {
-    if (!confirm("Xoá các lần chạy cũ nhất cho tới khi dưới giới hạn?")) return;
+    if (!confirm(I18N.t("Xoá các lần chạy cũ nhất cho tới khi dưới giới hạn?"))) return;
     const r = await api.prune_memory();
     if (!bad(r)) { toast(r.deleted.length ? `Đã xoá ${r.deleted.length} lần chạy cũ.` : "Chưa vượt giới hạn – không cần xoá."); renderMemory(r); }
   };
@@ -724,22 +762,26 @@ async function init() {
   api = window.pywebview.api;
   api.get_style().then((st) => { if (!st.error) S.style = st; });
   applyTheme(store("theme"));
+  applyLang(store("lang") || "vi");
   wire();
   renderSlots();
   checkClaude();
   const settings = await api.get_settings();
   if (!settings.error) {
+    if (settings.ui_lang && settings.ui_lang !== I18N.lang) applyLang(settings.ui_lang);
     if ((settings.last_inputs || {}).paths) useInputs(settings.last_inputs.paths);
     $("#careful").checked = settings.careful_mode !== false;
     if (settings.auto_update_check) checkUpdate(false);
     else api.check_update().then((u) => { if (!u.error) { S.update = u; renderVersion(); } });
   }
-  const last = await api.results();
-  if (!last.error && last.result) { setRun(last); go("results"); }
+  await initTeam();
+  if ((!S.role || S.role.role !== "member") && !S.runId) {
+    const last = await api.results();
+    if (!last.error && last.result) { setRun(last); go("results"); }
+  }
   const w = await api.whats_new();
   if (!w.error && w.show) showInstalledNotes(w);
-  loadLessons();
-  loadReview();
+  if (!S.role || S.role.role !== "member") { loadLessons(); loadReview(); }
 }
 
 if (window.pywebview && window.pywebview.api) init();
@@ -794,9 +836,9 @@ function renderDashboard() {
   const ranked = sc.pics.filter((p) => p.rank);
   const metricOpts = sc.metrics.map((m) => `<option value="${m.key}" ${m.key === (S.dbMetric || "gmv_pace") ? "selected" : ""}>${esc(m.label)}</option>`).join("");
   const tr = d.team_review;
-  const review = tr ? `${tr.summary ? `<p style="margin-top:0">${esc(tr.summary)}</p>` : ""}
-      ${tr.highlights.length ? "<h3 style='font-size:13px;margin:8px 0 4px'>Điểm mạnh</h3>" + tr.highlights.map((h) => `<div class="review-item"><span class="sev OK">${esc(h.pic)}</span> <b>${esc(metricLabel(h.metric))}</b><div>${esc(h.text)}</div></div>`).join("") : ""}
-      ${tr.improve.length ? "<h3 style='font-size:13px;margin:12px 0 4px'>Cần cải thiện</h3>" + tr.improve.map((h) => `<div class="review-item"><span class="sev MED">${esc(h.pic)}</span> <b>${esc(metricLabel(h.metric))}</b><div>${esc(h.text)}</div><div class="muted">→ ${esc(h.suggestion)}</div></div>`).join("") : ""}
+  const review = tr ? `${tr.summary ? `<p style="margin-top:0">${raw(tr.summary)}</p>` : ""}
+      ${tr.highlights.length ? "<h3 style='font-size:13px;margin:8px 0 4px'>Điểm mạnh</h3>" + tr.highlights.map((h) => `<div class="review-item"><span class="sev OK">${esc(h.pic)}</span> <b>${esc(metricLabel(h.metric))}</b><div>${raw(h.text)}</div></div>`).join("") : ""}
+      ${tr.improve.length ? "<h3 style='font-size:13px;margin:12px 0 4px'>Cần cải thiện</h3>" + tr.improve.map((h) => `<div class="review-item"><span class="sev MED">${esc(h.pic)}</span> <b>${esc(metricLabel(h.metric))}</b><div>${raw(h.text)}</div><div class="muted">→ ${raw(h.suggestion)}</div></div>`).join("") : ""}
       <p class="muted" style="font-size:12px">${esc((tr.created || "").replace("T", " "))}${tr.dropped ? ` · đã bỏ ${tr.dropped} câu vì số liệu không khớp` : ""}</p>`
     : '<div class="empty">Bấm “Nhận xét bởi Claude” để Claude so sánh các PIC dựa trên scorecard, xu hướng theo tuần và lịch sử các lần chạy.</div>';
   $("#db-body").innerHTML = `
@@ -876,4 +918,192 @@ function wireDashboard() {
     if (e.target.id === "db-metric") { S.dbMetric = e.target.value; drawCharts(); }
     if (e.target.id === "db-week") { S.dbWeek = e.target.value; drawCharts(); }
   });
+}
+
+// ------------------------------------------------------------------ team: Lead / Member
+S.role = null;
+const NOT_SETUP = "Chưa thiết lập nhóm";
+function copyBox(id, text) {
+  return `<div style="display:flex;gap:6px;align-items:flex-start"><div class="code-box" id="${id}" style="flex:1">${esc(text)}</div><button class="btn sm" data-copy="${id}">Copy</button></div>`;
+}
+function trText(t) {
+  if (!t || !t.type) return "—";
+  return t.type === "supabase" ? `Supabase · ${esc(t.url)} · bucket ${esc(t.bucket || "reports")}` : `Thư mục · ${esc(t.folder)}`;
+}
+async function loadRole() {
+  const r = await api.role_info();
+  if (bad(r)) return null;
+  S.role = r;
+  document.body.classList.toggle("member", r.role === "member");
+  $("#role-badge").textContent = r.role === "lead" ? `Lead · ${r.lead_name}` : r.role === "member" ? "Thành viên · chỉ xem" : NOT_SETUP;
+  renderTeam();
+  return r;
+}
+function renderTeam() {
+  const r = S.role || {};
+  const el = $("#team-card");
+  if (!r.role) {
+    el.innerHTML = `<h2>Nhóm</h2><p class="muted" style="margin-top:0">${NOT_SETUP}. Lead tạo nhóm rồi gửi mã thiết lập cho thành viên.</p><button class="btn primary" id="team-setup">Thiết lập nhóm…</button>`;
+    return;
+  }
+  if (r.role === "member") {
+    el.innerHTML = `<h2>Nhóm · Thành viên</h2>
+      <label>Mã thành viên của bạn – gửi cho Lead để được thêm vào nhóm</label>${copyBox("my-member-code", r.member_code || "")}
+      <p class="muted" style="font-size:13px">Nơi lấy báo cáo: ${trText(r.transport)}${r.opened ? ` · đang xem <b>${esc(r.opened.file)}</b>` : ""}</p>
+      <button class="btn ghost sm" id="team-reset">Đặt lại vai trò máy này</button>`;
+    return;
+  }
+  const pics = S.run ? [...new Set(S.run.digest.map((d) => d.pic))].filter((p) => p !== NO_PIC) : [];
+  const sb = (r.transport || {}).type === "supabase";
+  el.innerHTML = `<h2>Nhóm · Lead</h2>
+    <label>Mã thiết lập – gửi cho thành viên (không chứa bí mật, chỉ để nhận diện chữ ký của bạn và nơi lưu)</label>${copyBox("setup-code", r.setup_code || "")}
+    <p class="muted" style="font-size:13px">Nơi lưu: ${trText(r.transport)}</p>
+    ${sb ? `<div class="card" style="margin:8px 0;background:var(--muted-bg)"><b>Supabase</b> · ${r.supabase_logged_in ? '<span class="sev OK">ĐÃ ĐĂNG NHẬP</span>' : '<span class="sev MED">CHƯA ĐĂNG NHẬP</span> – cần để tải lên'}
+      <div class="grid g3" style="margin-top:8px"><div><label for="sb-email">Email Lead</label><input type="text" id="sb-email" autocomplete="username"></div>
+      <div><label for="sb-pw">Mật khẩu Supabase</label><input type="password" id="sb-pw" autocomplete="current-password"></div>
+      <div style="display:flex;gap:6px;align-items:flex-end"><button class="btn" id="sb-login">Đăng nhập</button><button class="btn ghost" id="sb-sql">SQL thiết lập…</button></div></div>
+      <div id="sb-sql-box" class="hidden" style="margin-top:8px"></div></div>` : ""}
+    <h3 style="font-size:14px;margin:12px 0 4px">Thành viên (${(r.members || []).length})</h3>
+    <div class="tbl"><table><thead><tr><th>Tên</th><th>PIC được xem</th><th>Mã</th><th></th></tr></thead><tbody>
+      ${(r.members || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.pic)}</td><td class="num" style="font-size:12px">${esc(m.code.slice(0, 16))}…</td><td><button class="btn sm ghost" data-rm="${esc(m.code)}">Xoá</button></td></tr>`).join("") || '<tr><td colspan="4" class="muted">Chưa có ai</td></tr>'}
+    </tbody></table></div>
+    <div class="grid g3" style="margin-top:8px">
+      <div><label for="mb-code">Mã thành viên (PMKM-…)</label><input type="text" id="mb-code"></div>
+      <div><label for="mb-pic">PIC</label><input type="text" id="mb-pic" list="mb-pics"><datalist id="mb-pics">${pics.map((p) => `<option>${esc(p)}</option>`).join("")}</datalist></div>
+      <div><label for="mb-name">Tên hiển thị</label><div style="display:flex;gap:6px"><input type="text" id="mb-name"><button class="btn primary" id="mb-add">Thêm</button></div></div>
+    </div>
+    <p class="muted" style="font-size:12px">Thêm/xoá thành viên có hiệu lực từ lần tải lên tiếp theo. Người bị xoá vẫn mở được các file cũ đã có phần của họ.</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+      <div><label for="lk-pw">Mật khẩu file chuyển quyền (≥ 8 ký tự)</label><input type="password" id="lk-pw" autocomplete="new-password"></div>
+      <button class="btn" id="lk-export">Xuất khoá Lead…</button>
+      <button class="btn ghost sm" id="team-reset">Đặt lại vai trò máy này</button>
+    </div>`;
+}
+function openSetup() { $("#setup-done").classList.add("hidden"); $("#setup-choose").classList.remove("hidden"); $("#setup-error").textContent = ""; $("#setup").classList.add("on"); }
+function closeSetup() { $("#setup").classList.remove("on"); }
+function setupDone(html) {
+  $("#setup-choose").classList.add("hidden");
+  $("#setup-done").classList.remove("hidden");
+  $("#setup-done").innerHTML = html + '<div style="margin-top:12px"><button class="btn primary" id="su-close">Xong</button></div>';
+}
+async function setupLead() {
+  const type = $("#su-tr [aria-pressed=true]").dataset.tr;
+  const transport = type === "supabase" ? { type, url: $("#su-sb-url").value.trim(), anon: $("#su-sb-anon").value.trim(), bucket: "reports" }
+    : { type, folder: $("#su-lead-folder").value.trim() };
+  const r = await api.setup_lead(transport, $("#su-lead-name").value.trim());
+  if (r.error) { $("#setup-error").textContent = r.error; return; }
+  await loadRole();
+  setupDone(`<h2>Đã tạo nhóm</h2><p>Gửi mã thiết lập này cho từng thành viên:</p>${copyBox("su-setup-code", r.setup_code)}
+    <p class="muted" style="font-size:13px">Mỗi thành viên dán mã vào app của họ và gửi lại cho bạn <b>mã thành viên</b> (PMKM-…). Thêm mã đó ở Cài đặt → Nhóm và chọn PIC họ được xem.
+    ${type === "supabase" ? "<br>Supabase: đăng nhập ở Cài đặt → Nhóm và chạy “SQL thiết lập” một lần trong SQL Editor của project." : ""}
+    <br>Nên “Xuất khoá Lead” ra file cất giữ – mất máy là mất quyền ký.</p>`);
+}
+async function setupMember() {
+  const r = await api.setup_member($("#su-mem-code").value.trim());
+  if (r.error) { $("#setup-error").textContent = r.error; return; }
+  await loadRole();
+  setupDone(`<h2>Đã kết nối</h2><p>Gửi mã thành viên này cho Lead để được thêm vào nhóm:</p>${copyBox("su-member-code", r.member_code)}
+    <p class="muted" style="font-size:13px">Sau khi Lead thêm bạn, các báo cáo tải lên từ đó sẽ có phần của bạn – bấm “Làm mới” ở trang Kết quả.</p>`);
+}
+async function importLeadKey() {
+  const f = await api.pick_file("Khoá Lead", "*.pmktkey");
+  if (bad(f) || !f.path) return;
+  const pw = prompt(I18N.t("Mật khẩu file chuyển quyền"));
+  if (!pw) return;
+  const r = await api.import_lead_key(f.path, pw);
+  if (r.error) { $("#setup-error").textContent = r.error; return; }
+  await loadRole();
+  closeSetup();
+  toast("Đã nhận quyền Lead.");
+}
+async function loadReports(openNewest) {
+  const r = await api.list_reports();
+  if (r.error) { $("#report-list").innerHTML = `<option>${esc(r.error)}</option>`; return; }
+  const cur = S.role && S.role.opened ? S.role.opened.file : null;
+  $("#report-list").innerHTML = r.reports.length ? r.reports.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? "selected" : ""}>${esc(x.name.replace("PMKT-Alert_", "").replace(".pmkt", "").replace("_", " "))}</option>`).join("")
+    : "<option value=''>Chưa có báo cáo</option>";
+  if (openNewest && r.reports.length && r.reports[0].name !== cur) openReport(r.reports[0].name);
+}
+async function openReport(name) {
+  if (!name) return;
+  const r = await api.open_report(name);
+  if (bad(r)) return;
+  setRun(r);
+  await loadRole();
+  $("#published-line").textContent = ` · ${r.published_by || "Lead"} tải lên ${(r.published_at || "").replace("T", " ").slice(0, 16)}`;
+  go("results");
+}
+async function uploadReport() {
+  const b = $("#upload-btn");
+  b.disabled = true;
+  const r = await api.upload_report(S.runId);
+  b.disabled = false;
+  if (bad(r)) return;
+  $("#published-line").textContent = ` · đã tải lên ${r.name}`;
+  const missing = r.no_readers.filter((p) => p !== NO_PIC);
+  toast(`Đã tải lên ${r.name} (${(r.size / 1048576).toFixed(1)} MB) cho ${Object.keys(r.readers).length} PIC.${missing.length ? ` Chưa có thành viên cho: ${missing.join(", ")}.` : ""}`);
+}
+function wireTeam() {
+  $("#role-badge").onclick = () => { go("settings"); loadSettings(); };
+  $("#su-tr").addEventListener("click", (e) => {
+    const t = e.target.closest("[data-tr]"); if (!t) return;
+    $$("#su-tr button").forEach((b) => b.setAttribute("aria-pressed", String(b === t)));
+    $("#su-tr-supabase").classList.toggle("hidden", t.dataset.tr !== "supabase");
+    $("#su-tr-folder").classList.toggle("hidden", t.dataset.tr !== "folder");
+  });
+  $("#su-lead-go").onclick = setupLead;
+  $("#su-mem-go").onclick = setupMember;
+  $("#su-lead-import").onclick = importLeadKey;
+  $("#su-skip").onclick = () => { store("setupSkip", "1"); closeSetup(); };
+  $("#upload-btn").onclick = uploadReport;
+  $("#reload-pmkt").onclick = () => loadReports(false);
+  $("#report-list").onchange = (e) => openReport(e.target.value);
+  $("#open-pmkt").onclick = async () => {
+    const f = await api.pick_file("PMKT Alert", "*.pmkt");
+    if (bad(f) || !f.path) return;
+    const r = await api.open_local_report(f.path);
+    if (!bad(r)) { setRun(r); await loadRole(); go("results"); }
+  };
+  document.addEventListener("click", async (e) => {
+    const t = e.target;
+    if (t.dataset.copy) { copyText($("#" + t.dataset.copy).textContent); return; }
+    if (t.dataset.pickfolder) { const f = await api.pick_folder(); if (!bad(f) && f.path) $("#" + t.dataset.pickfolder).value = f.path; return; }
+    if (t.dataset.rm) { if (confirm(I18N.t("Xoá thành viên này? Báo cáo tải lên sau sẽ không có phần của họ.")) && !bad(await api.remove_member(t.dataset.rm))) loadRole(); return; }
+    switch (t.id) {
+      case "su-close": closeSetup(); if (S.role.role === "member") loadReports(true); break;
+      case "team-setup": openSetup(); break;
+      case "team-reset":
+        if (confirm(I18N.t(S.role.role === "lead" ? "Đặt lại sẽ xoá khoá Lead trên máy này. Đã xuất khoá Lead ra file chưa?" : "Đặt lại vai trò máy này?")) && !bad(await api.reset_role())) { await loadRole(); openSetup(); }
+        break;
+      case "mb-add": {
+        const r = await api.add_member($("#mb-code").value.trim(), $("#mb-pic").value.trim(), $("#mb-name").value.trim());
+        if (!bad(r)) { toast("Đã thêm thành viên."); loadRole(); }
+        break;
+      }
+      case "sb-login": {
+        const r = await api.lead_login($("#sb-email").value.trim(), $("#sb-pw").value);
+        if (!bad(r)) { toast("Đã đăng nhập Supabase."); loadRole(); }
+        break;
+      }
+      case "sb-sql": {
+        const r = await api.supabase_sql();
+        if (!bad(r)) { $("#sb-sql-box").innerHTML = `<p class="muted" style="font-size:12px;margin:0 0 4px">Chạy một lần trong Supabase → SQL Editor (sau khi tạo user Lead ở Authentication):</p>${copyBox("sb-sql-text", r.sql)}`; $("#sb-sql-box").classList.remove("hidden"); }
+        break;
+      }
+      case "lk-export": {
+        const r = await api.export_lead_key(null, $("#lk-pw").value);
+        if (!bad(r) && !r.cancelled) toast(`Đã lưu ${r.path}`);
+        break;
+      }
+    }
+  });
+}
+async function initTeam() {
+  wireTeam();
+  const r = await loadRole();
+  if (!r) return;
+  if (!r.role && !store("setupSkip")) openSetup();
+  const s = await api.startup_open();
+  if (!s.error && s.opened) { const res = await api.results(); if (!res.error) setRun(res); await loadRole(); go("results"); }
+  if (r.role === "member") loadReports(!(s && s.opened));
 }

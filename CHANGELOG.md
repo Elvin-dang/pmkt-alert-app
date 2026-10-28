@@ -2,6 +2,19 @@
 
 Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản phát hành sẽ không build nếu thiếu mục cho phiên bản đó.
 
+## v0.1.7 – 28/10/2026
+### Mới
+- **Lead / Thành viên.** Lead chạy dữ liệu, duyệt kết quả rồi bấm **Tải lên cho nhóm**. Thành viên chỉ xem: không chạy, không sửa, không góp ý, không Copy Message, không xuất Excel.
+- **Mỗi thành viên chỉ thấy phần PIC của mình.** File báo cáo `.pmkt` được nén, mã hoá riêng cho từng thành viên và ký bởi Lead; app chỉ mở được file có chữ ký đúng và có phần dành cho mình. Dashboard của thành viên chỉ có điểm và xu hướng của chính họ (không có bảng xếp hạng).
+- Nơi lưu báo cáo chung: **Supabase Storage** (Lead đăng nhập để tải lên, thành viên chỉ đọc) hoặc **thư mục chia sẻ** (OneDrive / SharePoint / ổ mạng). File tự đặt tên theo ngày giờ tải lên và không bao giờ ghi đè; thành viên bấm **Làm mới** rồi chọn báo cáo muốn xem.
+- Thiết lập: Lead tạo nhóm → gửi **mã thiết lập** cho thành viên → thành viên gửi lại **mã thành viên** → Lead gán mã đó với PIC ở Cài đặt → Nhóm. Có thể xuất / nhận **khoá Lead** (file có mật khẩu) để chuyển sang máy khác.
+- Nhấp đúp file `.pmkt` trên Windows sẽ mở bằng app.
+- **Tiếng Anh / Tiếng Việt:** nút EN/VI trên thanh trên cùng đổi ngôn ngữ giao diện. Ngôn ngữ tin nhắn Claude viết cho PIC vẫn chỉnh ở Cài đặt → Văn phong.
+- **Tiến trình chi tiết + thời gian còn lại:** từng PIC hiện bước đang làm (viết nháp → kiểm tra số liệu → biên tập) và số phần đã xong; thời gian còn lại ước tính theo các lần chạy trước và chính xác dần sau mỗi lần chạy.
+### Thay đổi
+- Chạy xong không tự chia sẻ nữa – Lead xem lại rồi mới tải lên.
+- Kiểm tra quyền ở cả phía app (không chỉ ẩn nút): thao tác của Lead bị từ chối ở chế độ Thành viên.
+
 ## v0.1.6 – 27/10/2026
 Bản này gồm toàn bộ thay đổi của v0.1.4 và v0.1.5 (hai bản đó build lỗi nên chưa từng phát hành).
 ### Mới

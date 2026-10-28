@@ -453,3 +453,20 @@ def test_detect_csv_tables_fill_tracker_slot(tmp_path):
     run = Api(Store(tmp_path / "s2"), status_fn=OK, ask_fn=always_raise(ClaudeError("x"))).run(
         [p for r in full["roles"].values() for p in r.get("paths", [r["path"]])])
     assert "error" not in run and run["result"]["pl"]
+
+
+def test_progress_sends_eta_and_learns_step_times(tmp_path, synthetic_paths):
+    class Win:
+        calls = []
+        def evaluate_js(self, js):
+            self.calls.append(js)
+    api = Api(Store(tmp_path / "s"), status_fn=OK,
+              ask_fn=lambda p, s: {"findings": []} if "findings" in s["properties"] else {"insights": [], "todos": [], "slack": "x"})
+    api._window = Win()
+    out = api.run(paths(synthetic_paths))
+    assert "error" not in out
+    events = [json.loads("[" + js[js.index("onProgress(") + 11:-1] + "]") for js in Win.calls]
+    assert all(len(e) == 4 and e[3]["eta"] >= 0 for e in events)
+    assert any(e[0].startswith("pic:") for e in events) and events[-1][3]["eta"] == 0
+    learned = api._store.get_settings()["step_times"]
+    assert {"load", "rules", "claude_call"} <= set(learned)

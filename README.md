@@ -30,6 +30,19 @@ Data can be `.xlsx` or `.csv` (mixed is fine); the logic file must be `.xlsx`. F
 - User data (logic versions, lessons, feedback, writing style, run history) lives in `%APPDATA%\PMKT Alert` and survives updates.
 - This repository contains no business data; tests use synthetic files.
 
+## Team: Lead and Members
+
+The Lead runs the data and uploads a reviewed report; Members only view, and only their own PIC.
+
+1. **Lead** – first launch → *I'm the Lead* → pick where reports live: Supabase Storage or a shared folder. The app shows a **setup code** (`PMKT1:…`) – send it to each member. It holds the Lead's public signing key and where reports live; it holds no secrets.
+2. **Member** – first launch → *I'm a Member* → paste the setup code. The app shows a **member code** (`PMKM-…`) – send it back to the Lead.
+3. **Lead** – Settings → Team → add each member code and choose the PIC it may see.
+4. After a run, **Upload to team**. The file is named `PMKT-Alert_<date>_<time>.pmkt` and never overwrites an earlier one. Members press **Refresh** and pick a report.
+
+A `.pmkt` file is compressed and encrypted: every PIC's part has its own key, wrapped for each member of that PIC (X25519 + AES-GCM). The whole file is signed by the Lead (Ed25519) and checked before anything is opened. Keys live in `secrets.bin`, which is protected with Windows DPAPI. Use *Export Lead key* (password-protected) to move the Lead role to another machine.
+
+**Supabase setup (once):** create a project, add the Lead as a user under Authentication, copy the Project URL and the anon key into the Lead setup, then sign in under Settings → Team. Run the SQL shown under *Supabase SQL* in the SQL editor. It creates the private `reports` bucket: everyone can read it, and only the Lead's email can upload or delete. Members never need a Supabase account.
+
 ## Develop
 
 ```bash

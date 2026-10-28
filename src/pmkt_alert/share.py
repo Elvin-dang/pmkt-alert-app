@@ -61,3 +61,44 @@ def unpack_run(files: dict[str, bytes]) -> tuple[dict, Inputs, bytes, str]:
     inputs = Inputs(t["raw"], t["products"], t["kpi"], t["ineligible"], t["ads"], t["activity"],
                     {date.fromisoformat(k): v for k, v in meta["event_days"].items()}, meta["defind_text"], meta["sources"])
     return json.loads(files["run.json"]), inputs, files["logic.xlsx"], meta["logic_name"]
+
+
+def filter_run(run: dict, pic: str, scorecard_row: dict | None) -> dict:
+    """Only what one PIC may see: their rows, their Claude output, the Department frame needed to read their
+    score, and their own scorecard row (no ranking, no other PICs, no logic review, no data warnings)."""
+    res = run["result"]
+    mine = lambda rows: [r for r in rows if r.get("pic") == pic]  # noqa: E731
+    result = {**res, "pl": mine(res["pl"]), "camp": mine(res["camp"]), "digest": mine(res["digest"]),
+              "pics": mine(res.get("pics") or []), "issues": [], "logic_issues": [], "unreliable": False}
+    ai = run.get("ai") or {}
+    ai_part = {"claude_ok": ai.get("claude_ok"), "error": ai.get("error"), "review": [], "logic_eval": None,
+               "per_pic": {pic: ai["per_pic"][pic]} if pic in (ai.get("per_pic") or {}) else {}}
+    row = None
+    if scorecard_row:
+        row = {**scorecard_row, "rank": None}
+    return {"run_id": run.get("run_id"), "result": result, "ai": ai_part, "team_review": None, "my_scorecard": row}
+
+
+def filter_inputs(inputs: Inputs, run: dict, pic: str) -> Inputs:
+    """Data rows for this PIC's own product lines / campaigns only."""
+    pls = {r["pl"] for r in run["result"]["pl"] if r.get("pic") == pic}
+    asins = set(inputs.products.loc[inputs.products["pl"].isin(pls), "asin"])
+    keys = {r.get("camp_key") for r in run["result"]["camp"] if r.get("pic") == pic}
+    from .rules.actions import _campaign_of, normalize_name
+    act = inputs.activity
+    if len(act):
+        act = act[[normalize_name(_campaign_of(lv) or "") in keys for lv in act["level"]]]
+    pick = lambda df: df[df["asin"].isin(asins)] if "asin" in df.columns else df  # noqa: E731
+    return Inputs(pick(inputs.raw), pick(inputs.products), pick(inputs.kpi), pick(inputs.ineligible), pick(inputs.ads),
+                  act, inputs.event_days, inputs.defind_text, inputs.sources)
+
+
+def build_parts(run: dict, inputs: Inputs, logic_path: Path, members: list[dict], scorecard_rows: dict) -> dict:
+    """{"lead": (files, []), "pic:X": (files, [member public keys of X])} for package.build."""
+    from .identity import parse_member_code
+    parts = {"lead": (pack_run(run, inputs, logic_path), [])}
+    for pic in sorted({m["pic"] for m in members}):
+        readers = [parse_member_code(m["code"]) for m in members if m["pic"] == pic]
+        part_run = filter_run(run, pic, scorecard_rows.get(pic))
+        parts[f"pic:{pic}"] = (pack_run(part_run, filter_inputs(inputs, run, pic), logic_path), readers)
+    return parts

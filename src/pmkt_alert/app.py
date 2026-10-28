@@ -11,6 +11,23 @@ def ui_path() -> Path:
     return Path(__file__).parent / "ui" / "index.html"
 
 
+def file_type_entries(exe: str) -> list[tuple[str, str, str]]:
+    """Per-user registry entries (HKCU, no admin) so double-clicking a .pmkt opens this app."""
+    return [(r"Software\Classes\.pmkt", "", "PMKTAlert.Run"),
+            (r"Software\Classes\PMKTAlert.Run", "", "PMKT Alert run"),
+            (r"Software\Classes\PMKTAlert.Run\DefaultIcon", "", f'"{exe}",0'),
+            (r"Software\Classes\PMKTAlert.Run\shell\open\command", "", f'"{exe}" "%1"')]
+
+
+def register_file_type() -> None:
+    if sys.platform != "win32" or not getattr(sys, "frozen", False):
+        return
+    import winreg
+    for key, name, value in file_type_entries(sys.executable):
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as k:
+            winreg.SetValueEx(k, name, 0, winreg.REG_SZ, value)
+
+
 def main() -> None:
     if "--selfcheck" in sys.argv:  # used by CI on the built exe
         sys.exit(0 if ui_path().exists() else 1)
@@ -38,6 +55,11 @@ def main() -> None:
     store = Store(default_base())
     cleanup_downloads(store.base / "updates")
     api = Api(store)
+    api._startup_file = next((a for a in sys.argv[1:] if a.lower().endswith(".pmkt")), None)
+    try:
+        register_file_type()
+    except OSError:
+        pass
     window = webview.create_window("PMKT Alert", url=str(ui_path()), js_api=api, width=1440, height=900,
                                    min_size=(1100, 700))
     api._window = window

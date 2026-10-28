@@ -91,3 +91,18 @@ def test_negated_advice_is_consistent():
     assert consistent("Đừng tăng bid thêm, cắt bid 10%", [down])
     assert consistent("Không tăng budget cho camp này", [down])
     assert not consistent("Nên tăng bid 10%", [down])
+
+
+def test_generate_reports_substeps_and_call_count(rj, logic, tmp_path):
+    from pmkt_alert.ai import planned_calls
+    events, calls = [], []
+    draft = {"insights": [], "todos": [], "slack": "x"}
+    g = generate(rj, logic, Store(tmp_path), {}, "", careful=True,
+                 ask_fn=lambda p, s: calls.append(1) or ({"findings": []} if _is(s, "findings") else draft),
+                 on_step=lambda *e: events.append(e))
+    assert g["claude_ok"] and planned_calls(rj, careful=True) == len(calls)
+    steps = {e[0] for e in events}
+    assert {"pic:PIC A", "review"} <= steps
+    a = [e for e in events if e[0] == "pic:PIC A"]
+    assert a[0][1] == "running" and a[-1][1] == "done" and len(a) >= 3  # draft → critic → done
+    assert sum(1 for e in events if e[3]) == len(calls)  # one "call finished" tick per Claude call

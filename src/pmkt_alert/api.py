@@ -10,7 +10,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import __version__
-from .ai import evaluate_logic, generate, offline, pic_rows
+from .ai import evaluate_logic, generate, offline, pic_rows, planned_calls
 from .aggregate import asin_map
 from .changelog import bundled_text, parse as parse_changelog
 from .backtest import apply_approved, propose_from_feedback, proposals_from_review
@@ -19,12 +19,19 @@ from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
 from .evidence import evidence
 from .export import export_pic
-from .identity import invite_code, new_lead_key, private_bytes, private_from_bytes, protect, public_key_from_invite, unprotect
-from .package import EXT, PackageError, derive_key
+from .identity import LeadKeys, MemberKey, member_code, parse_member_code, parse_setup_code, protect, setup_code, unprotect
+from .package import EXT, PackageError
 from .package import build as build_package
 from .package import read as read_package
-from .share import pack_run, unpack_run
+from .progress import Eta
+from .share import build_parts, unpack_run
+from .transport import SUPABASE_SQL, TransportError, make_transport
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+
+def _kdf(password: str, salt: bytes) -> bytes:
+    return Scrypt(salt=salt, length=32, n=2 ** 15, r=8, p=1).derive(password.encode("utf-8"))
 from .loaders import ROLES, TRACKER_REQUIRED, TRACKER_SHEETS, InputError, detect_inputs, input_files, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
 from .pipeline import result_to_json, run_rules
@@ -44,8 +51,7 @@ def always_fail(prompt, schema):
 
 
 LEAD_ONLY = "Chỉ Lead được làm việc này – bạn đang ở chế độ Thành viên (chỉ xem)"
-MEMBER_SETTINGS = {"language", "my_pic", "share_folder", "auto_update_check", "last_seen_version"}
-MIN_PASSPHRASE = 12
+MEMBER_SETTINGS = {"language", "ui_lang", "auto_update_check", "last_seen_version"}
 
 
 def lead_only(fn):
@@ -63,7 +69,7 @@ def safe(fn):
     def wrapper(self, *a, **k):
         try:
             return fn(self, *a, **k)
-        except (InputError, LogicError, ClaudeError, ValueError, RuntimeError, PermissionError, PackageError) as e:
+        except (InputError, LogicError, ClaudeError, ValueError, RuntimeError, PermissionError, PackageError, TransportError) as e:
             return {"error": str(e)}
         except Exception as e:  # never let a traceback reach the UI
             self._log(traceback.format_exc())
@@ -82,7 +88,9 @@ class Api:
         self._running = False
         self._inputs = None
         self._paths: list[str] = []
+        self._eta: Eta | None = None  # time-left estimate of the run in progress
         self._member: dict | None = None  # Member mode: the opened .pmkt (run, inputs, logic path, file)
+        self._startup_file: str | None = None  # a .pmkt double-clicked to start the app
 
     # ------------------------------------------------------------- helpers
     def _with_note(self, ask_fn):
@@ -97,11 +105,19 @@ class Api:
         with open(self._store.base / "error.log", "a", encoding="utf-8") as f:
             f.write(f"--- {datetime.now().isoformat()}\n{text}\n")
 
-    def _progress(self, step: str, state: str, detail: str = "") -> None:
+    def _progress(self, step: str, state: str, detail: str = "", call_finished: bool = False) -> None:
+        eta = self._eta
+        if eta is not None:
+            if call_finished:
+                eta.calls_done()
+            elif ":" not in step and step != "review":
+                (eta.start if state == "running" else eta.done)(step)
         if self._window is not None:
-            self._window.evaluate_js(f"window.onProgress && onProgress({json.dumps(step)}, {json.dumps(state)}, {json.dumps(detail)})")
+            extra = {"eta": round(eta.remaining()) if eta else None}
+            self._window.evaluate_js(f"window.onProgress && onProgress({json.dumps(step)}, {json.dumps(state)}, "
+                                     f"{json.dumps(detail)}, {json.dumps(extra)})")
 
-    # ------------------------------------------------------------- roles
+    # ------------------------------------------------------------- roles & sharing
     def _role(self) -> str | None:
         return self._store.get_settings().get("role")
 
@@ -117,129 +133,236 @@ class Api:
         except OSError:
             pass
 
-    def _lead_key(self):
-        raw = self._secrets().get("lead_key")
+    def _lead_keys(self) -> LeadKeys:
+        raw = self._secrets().get("lead_keys")
         if not raw:
             raise PermissionError("Máy này chưa có khoá Lead")
-        return private_from_bytes(base64.b64decode(raw))
+        return LeadKeys.from_bytes(base64.b64decode(raw))
 
-    def _member_open(self, path: Path | None = None) -> dict:
-        """Open a .pmkt (default: the newest in the shared folder) with the team passphrase + Lead's code."""
-        folder = self._store.get_settings().get("share_folder") or ""
-        if path is None:
-            files = sorted(Path(folder).glob(f"*{EXT}"), key=lambda f: f.stat().st_mtime, reverse=True) if folder else []
-            if not files:
-                raise ValueError("Chưa có file .pmkt nào trong thư mục chia sẻ – chờ Lead chạy dữ liệu")
-            path = files[0]
-        pub = public_key_from_invite(self._store.get_settings().get("lead_invite") or "")
-        manifest, files = read_package(Path(path).read_bytes(), self._secrets().get("passphrase", ""), pub)
+    def _my_reader_key(self):
+        sec = self._secrets()
+        if sec.get("lead_keys"):
+            return self._lead_keys().enc_private
+        if sec.get("member_key"):
+            return MemberKey.from_bytes(base64.b64decode(sec["member_key"])).private
+        raise PermissionError("Máy này chưa được thiết lập (Cài đặt → Nhóm)")
+
+    def _lead_sign_public(self):
+        if self._role() == "lead":
+            return self._lead_keys().sign_public
+        return parse_setup_code(self._store.get_settings().get("setup_code") or "")[0]
+
+    def _transport(self, auth: bool = False):
+        cfg = self._store.get_settings().get("transport") or {}
+        token = None
+        if auth and cfg.get("type") == "supabase":
+            rt = self._secrets().get("sb_refresh")
+            if not rt:
+                raise PermissionError("Lead cần đăng nhập Supabase trước khi tải lên (Cài đặt → Nhóm)")
+            t = make_transport(cfg)
+            access, new_rt = t.refresh(rt)
+            self._save_secrets({**self._secrets(), "sb_refresh": new_rt})
+            return t
+        return make_transport(cfg, token)
+
+    def _open_blob(self, blob: bytes, name: str) -> dict:
+        meta, files = read_package(blob, self._my_reader_key(), self._lead_sign_public())
         run, inputs, logic_bytes, logic_name = unpack_run(files)
         logic_path = self._store.base / "shared" / logic_name
         logic_path.parent.mkdir(parents=True, exist_ok=True)
         logic_path.write_bytes(logic_bytes)
-        self._member = {"run": {**run, "published_by": manifest.get("by"), "published_at": manifest.get("at"),
-                                "file": Path(path).name}, "inputs": inputs, "logic_path": logic_path, "path": Path(path)}
+        self._member = {"run": {**run, "file": name, "published_by": meta.get("by"), "published_at": meta.get("at"),
+                                "as_of_meta": meta.get("as_of")}, "inputs": inputs, "logic_path": logic_path}
         return self._member
 
     def _member_state(self) -> dict:
-        return self._member or self._member_open()
+        if self._member:
+            return self._member
+        reports = self._transport().list()
+        if not reports:
+            raise ValueError("Chưa có báo cáo nào – chờ Lead tải lên")
+        return self._open_blob(self._transport().download(reports[0]["name"]), reports[0]["name"])
 
-    def _publish(self, run_id: str) -> str | None:
-        """Lead: write the run as an encrypted, signed .pmkt into the shared folder."""
-        folder = self._store.get_settings().get("share_folder")
-        secrets = self._secrets()
-        if self._role() != "lead" or not folder or not secrets.get("lead_key"):
-            return None
-        run = self._store.load_run(run_id)
-        logic_path = next((p for v, p in self._store.logic_versions() if v == run["result"]["logic_version"]),
-                          self._store.active_logic())
-        blob = build_package(pack_run(run, self._ensure_inputs(), logic_path),
-                             {"by": self._store.get_settings().get("lead_name") or "Lead", "at": datetime.now().isoformat(timespec="seconds"),
-                              "as_of": run["result"]["as_of"], "run_id": run_id, "app": __version__},
-                             secrets["passphrase"], self._lead_key())
-        name = f"PMKT-Alert_{run['result']['as_of']}_{run_id}{EXT}"
-        Path(folder).mkdir(parents=True, exist_ok=True)
-        tmp = Path(folder) / (name + ".tmp")
-        tmp.write_bytes(blob)
-        os.replace(tmp, Path(folder) / name)
-        return name
+    def _setup_code(self) -> str:
+        return setup_code(self._lead_keys().sign_public, self._store.get_settings().get("transport") or {})
 
     @safe
     def role_info(self) -> dict:
-        st, sec = self._store.get_settings(), self._secrets()
-        out = {"role": st.get("role"), "share_folder": st.get("share_folder") or "", "my_pic": st.get("my_pic") or "",
-               "has_passphrase": bool(sec.get("passphrase"))}
-        if st.get("role") == "lead" and sec.get("lead_key"):
-            out["invite_code"] = invite_code(self._lead_key().public_key())
-        if st.get("role") == "member":
-            out["lead_invite"] = st.get("lead_invite")
+        st = self._store.get_settings()
+        out = {"role": st.get("role"), "transport": {k: v for k, v in (st.get("transport") or {}).items() if k != "anon"},
+               "lead_name": st.get("lead_name") or ""}
+        if st.get("role") == "lead" and self._secrets().get("lead_keys"):
+            out["setup_code"] = self._setup_code()
+            out["supabase_logged_in"] = bool(self._secrets().get("sb_refresh"))
+            out["members"] = st.get("members") or []
+        if st.get("role") == "member" and self._secrets().get("member_key"):
+            out["member_code"] = member_code(MemberKey.from_bytes(base64.b64decode(self._secrets()["member_key"])).public)
             if self._member:
                 out["opened"] = {k: self._member["run"].get(k) for k in ("file", "published_by", "published_at")}
         return out
 
     @safe
-    def setup_lead(self, passphrase: str, share_folder: str = "", lead_name: str = "") -> dict:
-        if len(passphrase or "") < MIN_PASSPHRASE:
-            raise ValueError(f"Mật khẩu nhóm cần ít nhất {MIN_PASSPHRASE} ký tự")
-        key = new_lead_key()
-        self._save_secrets({"passphrase": passphrase, "lead_key": base64.b64encode(private_bytes(key)).decode()})
-        self._store.save_settings({"role": "lead", "share_folder": share_folder, "lead_name": lead_name or "Lead"})
-        return {**self.role_info(), "invite_code": invite_code(key.public_key())}
+    def setup_lead(self, transport: dict, lead_name: str = "") -> dict:
+        make_transport(transport)  # validates the config
+        keys = LeadKeys.new()
+        self._save_secrets({"lead_keys": base64.b64encode(keys.to_bytes()).decode()})
+        self._store.save_settings({"role": "lead", "transport": transport, "lead_name": lead_name or "Lead", "members": []})
+        return self.role_info()
 
     @safe
-    def setup_member(self, invite: str, passphrase: str, my_pic: str, share_folder: str) -> dict:
-        public_key_from_invite(invite)  # validates the code (checksum)
-        old_settings, old_secrets = self._store.get_settings(), self._secrets()
-        self._store.save_settings({"role": "member", "lead_invite": invite.strip(), "my_pic": my_pic, "share_folder": share_folder})
-        self._save_secrets({"passphrase": passphrase})
-        try:
-            opened = bool(list(Path(share_folder).glob(f"*{EXT}"))) and bool(self._member_open())
-        except Exception:
-            self._store.save_settings({k: old_settings.get(k) for k in ("role", "lead_invite", "my_pic", "share_folder")})
-            self._save_secrets(old_secrets)
-            self._member = None
-            raise
-        return {**self.role_info(), "opened": opened}
+    def lead_login(self, email: str, password: str) -> dict:
+        if self._role() != "lead":
+            raise PermissionError(LEAD_ONLY)
+        t = make_transport(self._store.get_settings().get("transport") or {})
+        _, refresh = t.login(email, password)
+        self._save_secrets({**self._secrets(), "sb_refresh": refresh})
+        self._store.save_settings({"lead_email": email})
+        return {"ok": True}
+
+    @safe
+    def supabase_sql(self) -> dict:
+        return {"sql": SUPABASE_SQL.replace("LEAD_EMAIL", self._store.get_settings().get("lead_email") or "LEAD_EMAIL")}
+
+    @safe
+    def setup_member(self, code: str) -> dict:
+        _, transport = parse_setup_code(code)
+        sec = self._secrets()
+        key = MemberKey.from_bytes(base64.b64decode(sec["member_key"])) if sec.get("member_key") else MemberKey.new()
+        self._save_secrets({"member_key": base64.b64encode(key.to_bytes()).decode()})
+        self._store.save_settings({"role": "member", "setup_code": code.strip(), "transport": transport})
+        self._member = None
+        return {**self.role_info(), "member_code": member_code(key.public)}
 
     @safe
     @lead_only
-    def change_passphrase(self, new: str) -> dict:
-        if len(new or "") < MIN_PASSPHRASE:
-            raise ValueError(f"Mật khẩu nhóm cần ít nhất {MIN_PASSPHRASE} ký tự")
-        self._save_secrets({**self._secrets(), "passphrase": new})
+    def members(self) -> dict:
+        return {"members": self._store.get_settings().get("members") or []}
+
+    @safe
+    @lead_only
+    def add_member(self, code: str, pic: str, name: str = "") -> dict:
+        parse_member_code(code)
+        code = code.strip().upper()
+        members = [m for m in (self._store.get_settings().get("members") or []) if m["code"] != code]
+        members.append({"code": code, "pic": pic, "name": name or pic, "added": datetime.now().isoformat(timespec="seconds")})
+        self._store.save_settings({"members": members})
+        return {"members": members}
+
+    @safe
+    @lead_only
+    def remove_member(self, code: str) -> dict:
+        members = [m for m in (self._store.get_settings().get("members") or []) if m["code"] != code.strip().upper()]
+        self._store.save_settings({"members": members})
+        return {"members": members}
+
+    @safe
+    @lead_only
+    def upload_report(self, run_id: str | None = None) -> dict:
+        """Lead, after reviewing a run: encrypt per PIC, sign, upload as PMKT-Alert_<date>_<time>.pmkt."""
+        run = self._store.load_run(run_id) if run_id else self._latest()
+        if not run:
+            raise ValueError("Không tìm thấy lần chạy")
+        members = self._store.get_settings().get("members") or []
+        logic_path = next((p for v, p in self._store.logic_versions() if v == run["result"]["logic_version"]),
+                          self._store.active_logic())
+        sc = scorecard(run["result"], self._store.get_settings().get("score_weights") or {})
+        rows = {p["pic"]: p for p in sc["pics"]}
+        parts = build_parts(run, self._ensure_inputs(), logic_path, members, rows)
+        now = datetime.now()
+        blob = build_package(parts, {"by": self._store.get_settings().get("lead_name") or "Lead",
+                                     "at": now.isoformat(timespec="seconds"), "as_of": run["result"]["as_of"],
+                                     "app": __version__}, self._lead_keys())
+        t = self._transport(auth=True)
+        existing = set()
+        try:
+            existing = {r["name"] for r in t.list()}
+        except Exception:
+            pass
+        name = f"PMKT-Alert_{now:%Y-%m-%d_%H-%M}{EXT}"
+        if name in existing:
+            name = f"PMKT-Alert_{now:%Y-%m-%d_%H-%M-%S}{EXT}"
+        t.upload(name, blob)
+        counts = {}
+        for m in members:
+            counts[m["pic"]] = counts.get(m["pic"], 0) + 1
+        pics = {d["pic"] for d in run["result"]["digest"]}
+        self._store.save_run_field(run["run_id"], "uploaded", (run.get("uploaded") or []) + [name])
+        return {"name": name, "size": len(blob), "readers": counts, "no_readers": sorted(pics - set(counts))}
+
+    @safe
+    def list_reports(self) -> dict:
+        return {"reports": self._transport().list()}
+
+    @safe
+    def open_report(self, name: str) -> dict:
+        return self._open_blob(self._transport().download(name), name)["run"]
+
+    @safe
+    @lead_only
+    def delete_report(self, name: str) -> dict:
+        self._transport(auth=True).delete(name)
         return {"ok": True}
 
     @safe
     @lead_only
-    def export_lead_key(self, path: str, password: str) -> dict:
+    def export_lead_key(self, path: str | None, password: str) -> dict:
         if len(password or "") < 8:
             raise ValueError("Mật khẩu file chuyển quyền cần ít nhất 8 ký tự")
+        if not path:
+            import webview
+            picked = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename="PMKT-Lead.pmktkey")
+            if not picked:
+                return {"cancelled": True}
+            path = picked if isinstance(picked, str) else picked[0]
+        st = self._store.get_settings()
+        payload = json.dumps({"keys": self._secrets()["lead_keys"], "members": st.get("members") or [],
+                              "transport": st.get("transport"), "lead_name": st.get("lead_name")}).encode()
         salt, nonce = os.urandom(16), os.urandom(12)
-        ct = AESGCM(derive_key(password, salt)).encrypt(nonce, private_bytes(self._lead_key()), b"PMKTKEY1")
-        Path(path).write_bytes(b"PMKTKEY1" + salt + nonce + ct)
-        return {"path": path}
+        Path(path).write_bytes(b"PMKTKEY2" + salt + nonce + AESGCM(_kdf(password, salt)).encrypt(nonce, payload, b"PMKTKEY2"))
+        return {"path": str(path)}
 
     @safe
-    def import_lead_key(self, path: str, password: str, passphrase: str, share_folder: str) -> dict:
+    def import_lead_key(self, path: str, password: str) -> dict:
         blob = Path(path).read_bytes()
-        if not blob.startswith(b"PMKTKEY1"):
+        if not blob.startswith(b"PMKTKEY2"):
             raise ValueError("Không phải file chuyển quyền Lead (.pmktkey)")
-        salt, nonce, ct = blob[8:24], blob[24:36], blob[36:]
         try:
-            raw = AESGCM(derive_key(password, salt)).decrypt(nonce, ct, b"PMKTKEY1")
+            d = json.loads(AESGCM(_kdf(password, blob[8:24])).decrypt(blob[24:36], blob[36:], b"PMKTKEY2"))
         except Exception:
             raise ValueError("Sai mật khẩu file chuyển quyền") from None
-        if len(passphrase or "") < MIN_PASSPHRASE:
-            raise ValueError(f"Mật khẩu nhóm cần ít nhất {MIN_PASSPHRASE} ký tự")
-        self._save_secrets({"passphrase": passphrase, "lead_key": base64.b64encode(raw).decode()})
-        self._store.save_settings({"role": "lead", "share_folder": share_folder})
-        return {**self.role_info(), "invite_code": invite_code(private_from_bytes(raw).public_key())}
+        self._save_secrets({"lead_keys": d["keys"]})
+        self._store.save_settings({"role": "lead", "members": d["members"], "transport": d["transport"],
+                                   "lead_name": d.get("lead_name") or "Lead"})
+        return self.role_info()
 
     @safe
-    def open_package(self, path: str | None = None) -> dict:
-        if self._role() != "member":
-            raise PermissionError("Chỉ dùng ở chế độ Thành viên")
-        return self._member_open(Path(path) if path else None)["run"]
+    def pick_file(self, label: str, pattern: str) -> dict:
+        if self._window is None:
+            raise RuntimeError("Chưa mở cửa sổ app")
+        import webview
+        picked = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types=(f"{label} ({pattern})",))
+        return {"path": (picked[0] if isinstance(picked, (list, tuple)) else picked) if picked else None}
+
+    @safe
+    def reset_role(self) -> dict:
+        """Forget this machine's role and keys (a Lead should export the key file first)."""
+        self._store.save_settings({"role": None, "setup_code": None})
+        (self._store.base / "secrets.bin").unlink(missing_ok=True)
+        self._member = None
+        return self.role_info()
+
+    @safe
+    def startup_open(self) -> dict:
+        """Open the .pmkt the app was launched with (double-click), once."""
+        path, self._startup_file = self._startup_file, None
+        if not path:
+            return {"opened": None}
+        run = self._open_blob(Path(path).read_bytes(), Path(path).name)["run"]
+        return {"opened": {k: run.get(k) for k in ("file", "published_by", "published_at")}}
+
+    @safe
+    def open_local_report(self, path: str) -> dict:
+        return self._open_blob(Path(path).read_bytes(), Path(path).name)["run"]
 
     def _latest(self) -> dict:
         if self._role() == "member":
@@ -350,9 +473,13 @@ class Api:
     @lead_only
     def run(self, paths: list[str], as_of: str | None = None, use_claude: bool = True) -> dict:
         self._running = True
+        self._eta = Eta(self._store.get_settings().get("step_times"))
+        self._eta.plan(["load", "logic", "rules"] + (["claude", "logic_eval"] if use_claude else []), claude_calls=0)
         try:
             return self._run(paths, as_of, use_claude)
         finally:
+            self._store.save_settings({"step_times": self._eta.learned()})
+            self._eta = None
             self._running = False
             self._cancel.clear()
 
@@ -377,6 +504,7 @@ class Api:
         rank = {"error": 0, "warn": 1, "info": 2}
         logic_issues = sorted(logic.issues, key=lambda i: rank[i["hint"]])
         errs = sum(i["hint"] == "error" for i in logic_issues)
+        self._eta.start("logic")
         self._progress("logic", "warn" if errs else "done",
                        f"{logic.path.name}: {errs} lỗi (đã dùng giá trị dự phòng), "
                        f"{sum(i['code'] == 'UNUSED' for i in logic_issues)} tham số app chưa dùng" if logic_issues else logic.path.name)
@@ -406,8 +534,10 @@ class Api:
             ai["logic_eval"] = evaluate_logic(logic_issues, logic, ask_fn=always_fail)
             self._store.update_run_ai(run_id, ai)
             self._progress("claude", "warn", ai["error"])
+            self._eta.done("logic_eval")
         elif use_claude:
             careful = bool(self._store.get_settings().get("careful_mode", True))
+            self._eta.calls_total = self._eta.calls_left = planned_calls(rj, careful)
             self._progress("claude", "running", "5 bước/PIC: dữ kiện → nháp → kiểm tra → biên tập → kiểm tra lại"
                            if careful else "Chế độ nhanh: nháp → kiểm tra")
             amap = asin_map(inputs.products, result.as_of)
@@ -415,13 +545,15 @@ class Api:
             inel = inputs.ineligible[(inputs.ineligible["date"] >= l7d[0]) & (inputs.ineligible["date"] <= l7d[1])]
             inel = inel.merge(amap, on="asin")[["asin", "pl", "pic", "reason"]].drop_duplicates("asin")
             ai = generate(rj, logic, self._store, inputs.event_days, inputs.defind_text,
-                          inel.to_dict("records"), ask_fn=self._ask_unless_stopped, careful=careful)
+                          inel.to_dict("records"), ask_fn=self._ask_unless_stopped, careful=careful,
+                          on_step=self._progress)
             if self._cancel.is_set():
                 ai.update(claude_ok=False, error=STOPPED + " – kết quả rule vẫn đầy đủ",
                           logic_eval=evaluate_logic(logic_issues, logic, ask_fn=always_fail))
                 self._store.update_run_ai(run_id, ai)
                 self._progress("claude", "warn", "Đã dừng")
-                return {"run_id": run_id, "result": rj, "ai": ai, "stopped": True, "published": self._publish(run_id)}
+                return {"run_id": run_id, "result": rj, "ai": ai, "stopped": True, "published": None}
+            self._eta.done("claude")
             self._progress("logic_eval", "running", "Claude đánh giá các vấn đề trong file logic")
             ai["logic_eval"] = evaluate_logic(logic_issues, logic, ask_fn=self._ask)
             self._progress("logic_eval", "done", ai["logic_eval"]["summary"][:120])
@@ -431,7 +563,7 @@ class Api:
             except Exception:  # a failed backtest must not hide the run
                 self._log(traceback.format_exc())
             self._progress("claude", "done" if ai["claude_ok"] else "warn", ai["error"] or "")
-        return {"run_id": run_id, "result": rj, "ai": ai, "stopped": False, "published": self._publish(run_id)}
+        return {"run_id": run_id, "result": rj, "ai": ai, "stopped": False, "published": None}
 
     @safe
     def evidence(self, unit_id: str, run_id: str | None = None) -> dict:
@@ -472,7 +604,10 @@ class Api:
     def dashboard(self, run_id: str | None = None) -> dict:
         run = self._run_or_latest(run_id)
         weights = self._store.get_settings().get("score_weights") or {}
-        return {"run_id": run["run_id"], "scorecard": scorecard(run["result"], weights),
+        sc = scorecard(run["result"], weights)
+        if self._role() == "member":  # the shared part only carries this PIC; scores come from the Lead's full run
+            sc["pics"] = [run["my_scorecard"]] if run.get("my_scorecard") else []
+        return {"run_id": run["run_id"], "scorecard": sc,
                 "weekly": weekly(self._ensure_inputs(), date.fromisoformat(run["result"]["as_of"])),
                 "runs": self._runs_history(), "team_review": run.get("team_review")}
 
@@ -509,7 +644,7 @@ class Api:
     @safe
     def results(self, run_id: str | None = None) -> dict:
         if self._role() == "member":
-            return self._member_open(Path(self._store.get_settings()["share_folder"]) / run_id)["run"] if run_id else self._latest()
+            return self._open_blob(self._transport().download(run_id), run_id)["run"] if run_id else self._latest()
         return self._store.load_run(run_id) if run_id else self._latest()
 
     @safe
@@ -594,10 +729,8 @@ class Api:
     @safe
     def history(self) -> dict:
         if self._role() == "member":
-            folder = self._store.get_settings().get("share_folder") or ""
-            files = sorted(Path(folder).glob(f"*{EXT}"), key=lambda f: f.stat().st_mtime, reverse=True) if folder else []
-            return {"runs": [{"run_id": f.name, "as_of": f.name.split("_")[1] if f.name.count("_") >= 2 else None,
-                              "logic_version": None, "alert_count": None, "feedback_count": None} for f in files[:30]],
+            return {"runs": [{"run_id": r["name"], "as_of": None, "logic_version": None, "alert_count": None,
+                              "feedback_count": None} for r in self._transport().list()[:30]],
                     "logic_versions": []}
         active = self._store.active_logic()
         return {"runs": self._store.list_runs(),

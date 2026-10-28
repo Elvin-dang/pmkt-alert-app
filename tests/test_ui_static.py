@@ -8,7 +8,7 @@ UI = Path(__file__).parents[1] / "src" / "pmkt_alert" / "ui"
 
 
 def _ui_text():
-    return "".join((UI / f).read_text(encoding="utf-8") for f in ("index.html", "app.js", "styles.css"))
+    return "".join((UI / f).read_text(encoding="utf-8") for f in ("index.html", "app.js", "styles.css", "i18n.js", "i18n_en.js"))
 
 
 def test_no_external_fonts_and_no_business_data():
@@ -29,3 +29,13 @@ def test_fonts_bundled():
     css = (UI / "styles.css").read_text(encoding="utf-8")
     for url in re.findall(r"url\(([^)]+)\)", css):
         assert (UI / url.strip("'\"")).exists(), url
+
+
+def test_english_dictionary_covers_static_ui():
+    import json
+    js = (UI / "i18n_en.js").read_text(encoding="utf-8")
+    d = json.loads(js[js.index("{"):js.rindex("}") + 1])
+    for vi in ("Kết quả", "Cài đặt", "Chạy dữ liệu", "Bằng chứng", "Tải lên cho nhóm", "Làm mới"):
+        assert d.get(vi) and d[vi] != vi, vi
+    html = (UI / "index.html").read_text(encoding="utf-8")
+    assert html.index("i18n_en.js") < html.index("i18n.js") < html.index("app.js")

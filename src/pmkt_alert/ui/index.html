@@ -31,16 +31,18 @@
   <div class="brand"><svg class="i" aria-hidden="true"><use href="#bell"/></svg><span>PMKT <b>Alert</b></span></div>
   <span class="run-meta" id="run-meta">Chưa chạy dữ liệu</span>
   <span class="sp"></span>
-  <span class="pill warn" id="cc-pill" title="" role="button" tabindex="0" style="cursor:pointer"><span class="dot"></span><span id="cc-text">Claude Code: Đang kiểm tra…</span></span>
-  <button class="btn sm" id="cc-recheck"><svg class="i" aria-hidden="true"><use href="#refresh"/></svg>Kiểm tra lại</button>
+  <button class="pill" id="role-badge" style="background:var(--muted-bg);color:var(--muted);border:0;cursor:pointer" title="Cài đặt → Nhóm"></button>
+  <span class="pill warn" id="cc-pill" data-lead title="" role="button" tabindex="0" style="cursor:pointer"><span class="dot"></span><span id="cc-text">Claude Code: Đang kiểm tra…</span></span>
+  <button class="btn sm" id="cc-recheck" data-lead><svg class="i" aria-hidden="true"><use href="#refresh"/></svg>Kiểm tra lại</button>
+  <button class="btn sm ghost" id="lang" aria-label="Đổi ngôn ngữ / Switch language" data-no-i18n>EN</button>
   <button class="btn sm ghost" id="theme" aria-label="Đổi giao diện sáng/tối">◐</button>
 </header>
 
 <nav aria-label="Điều hướng chính">
-  <button data-go="run" aria-current="page"><svg class="i" aria-hidden="true"><use href="#play"/></svg>Chạy dữ liệu</button>
+  <button data-go="run" aria-current="page" data-lead><svg class="i" aria-hidden="true"><use href="#play"/></svg>Chạy dữ liệu</button>
   <button data-go="results"><svg class="i" aria-hidden="true"><use href="#bell"/></svg>Kết quả<span class="count hidden" id="nav-results"></span></button>
   <button data-go="dashboard"><svg class="i" aria-hidden="true"><use href="#chart"/></svg>Dashboard đội</button>
-  <button data-go="review"><svg class="i" aria-hidden="true"><use href="#scale"/></svg>Rà soát logic<span class="count med hidden" id="nav-review"></span></button>
+  <button data-go="review" data-lead><svg class="i" aria-hidden="true"><use href="#scale"/></svg>Rà soát logic<span class="count med hidden" id="nav-review"></span></button>
   <button data-go="lessons"><svg class="i" aria-hidden="true"><use href="#book"/></svg>Bài học & Lịch sử</button>
   <div class="sep"></div>
   <button data-go="settings"><svg class="i" aria-hidden="true"><use href="#gear"/></svg>Cài đặt</button>
@@ -81,11 +83,15 @@
 
 <section id="results">
   <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
-    <div><h1>Kết quả</h1><p class="sub" style="margin:0">Tổng hợp theo PIC · bấm dòng PL để xem campaign</p></div>
+    <div><h1>Kết quả</h1><p class="sub" style="margin:0">Tổng hợp theo PIC · bấm dòng PL để xem campaign <span id="published-line"></span></p></div>
     <span style="flex:1"></span>
     <div style="width:240px"><label for="pic">PIC</label><select id="pic"></select></div>
-    <button class="btn" id="copy-slack"><svg class="i" aria-hidden="true"><use href="#copy"/></svg>Copy Message</button>
-    <button class="btn" id="export"><svg class="i" aria-hidden="true"><use href="#download"/></svg>Xuất Excel</button>
+    <select class="member-only" id="report-list" aria-label="Chọn báo cáo" style="width:auto;max-width:280px"></select>
+    <button class="btn member-only" id="reload-pmkt" title="Tải lại danh sách báo cáo"><svg class="i" aria-hidden="true"><use href="#refresh"/></svg>Làm mới</button>
+    <button class="btn member-only ghost" id="open-pmkt">Mở file .pmkt…</button>
+    <button class="btn primary" id="upload-btn" data-lead title="Mã hoá theo từng PIC, ký và tải lên cho nhóm"><svg class="i" aria-hidden="true"><use href="#download"/></svg>Tải lên cho nhóm</button>
+    <button class="btn" id="copy-slack" data-lead><svg class="i" aria-hidden="true"><use href="#copy"/></svg>Copy Message</button>
+    <button class="btn" id="export" data-lead><svg class="i" aria-hidden="true"><use href="#download"/></svg>Xuất Excel</button>
   </div>
   <div id="results-body"><div class="empty" style="margin-top:12px">Chưa có kết quả – vào “Chạy dữ liệu”.</div></div>
 </section>
@@ -94,8 +100,8 @@
   <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
     <div><h1>Dashboard đội</h1><p class="sub" style="margin:0" id="db-sub">So sánh các PIC – mỗi người được đo so với target của chính họ.</p></div>
     <span style="flex:1"></span>
-    <button class="btn" id="db-weights-btn">Trọng số điểm</button>
-    <button class="btn primary" id="db-review-btn"><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Nhận xét bởi Claude</button>
+    <button class="btn" id="db-weights-btn" data-lead>Trọng số điểm</button>
+    <button class="btn primary" id="db-review-btn" data-lead><svg class="i" aria-hidden="true"><use href="#spark"/></svg>Nhận xét bởi Claude</button>
   </div>
   <div id="db-weights" class="card hidden" style="margin-top:12px"></div>
   <div id="db-body" style="margin-top:12px"><div class="empty">Chưa có dữ liệu – chạy dữ liệu trước.</div></div>
@@ -118,9 +124,10 @@
 
 <section id="settings">
   <h1>Cài đặt</h1>
-  <p class="sub">Kết nối Claude Code, cập nhật, văn phong và email → PIC.</p>
+  <p class="sub">Nhóm, kết nối Claude Code, cập nhật, văn phong và email → PIC.</p>
+  <div class="card" id="team-card" style="margin-bottom:12px"></div>
   <div class="grid g2">
-    <div class="card">
+    <div class="card" data-lead>
       <h2>Claude Code</h2>
       <div id="cc-checks"></div>
       <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
@@ -144,7 +151,7 @@
     </div>
   </div>
 
-  <div class="grid g2" style="margin-top:12px">
+  <div class="grid g2" style="margin-top:12px" data-lead>
     <div class="card">
       <h2>Ghi chú cho Claude</h2>
       <p class="muted" style="font-size:12px;margin-top:0">Claude đọc ghi chú này ở <b>mọi</b> lần chạy (phân tích, biên tập, rà soát logic, nhận xét đội, viết lại tin nhắn) và ưu tiên nó hơn các gợi ý khác.</p>
@@ -164,7 +171,7 @@
     </div>
   </div>
 
-  <div class="card" style="margin-top:12px">
+  <div class="card" style="margin-top:12px" data-lead>
     <h2>Văn phong của bạn</h2>
     <p class="muted" style="font-size:12px;margin-top:0">Claude viết Insight, To-do và tin nhắn theo văn phong này. Dán vài tin nhắn thật của bạn – Claude học giọng văn từ đó.</p>
     <div class="grid g2">
@@ -188,14 +195,14 @@
     </div>
   </div>
 
-  <div class="card" style="margin-top:12px;max-width:640px">
+  <div class="card" style="margin-top:12px;max-width:640px" data-lead>
     <h2>Tài khoản Ads</h2>
     <label for="ads-account">Chỉ lấy dòng ads_camp của account</label>
     <select id="ads-account"><option value="">Tự chọn (account nhiều dòng nhất)</option></select>
     <p class="muted" style="font-size:12px;margin-bottom:0">Đổi xong bấm Chạy lại để áp dụng.</p>
   </div>
 
-  <div class="card" style="margin-top:12px">
+  <div class="card" style="margin-top:12px" data-lead>
     <h2>Email → PIC</h2>
     <p class="muted" style="font-size:12px;margin-top:0">Activity Log ghi người thao tác bằng email. App tự đoán theo tên PIC; sửa nếu sai.</p>
     <div id="emailmap"><div class="muted" style="font-size:13px">Chạy dữ liệu một lần để thấy danh sách email.</div></div>
@@ -217,10 +224,42 @@
   <div class="box">
     <div style="display:flex;align-items:center"><h2 id="wntitle" style="margin:0"></h2><span style="flex:1"></span><button class="btn sm ghost" id="wn-close" aria-label="Đóng"><svg class="i"><use href="#x"/></svg></button></div>
     <p class="muted" id="wn-date" style="font-size:12px;margin:2px 0 10px"></p>
-    <div class="markdown" id="wn-notes"></div>
-    <div id="wn-prev"></div>
+    <div class="markdown" id="wn-notes" data-no-i18n></div>
+    <div id="wn-prev" data-no-i18n></div>
     <p class="muted" id="wn-stat" style="font-size:12px;margin:10px 0"></p>
     <div style="display:flex;gap:8px;justify-content:flex-end"><button class="btn" id="wn-later">Để sau</button><button class="btn primary" id="wn-install">Tải & cài</button></div>
+  </div>
+</div>
+
+<div class="modal" id="setup" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+  <div class="box" style="width:880px">
+    <div style="display:flex;align-items:center"><h2 id="setup-title" style="margin:0 0 4px;flex:1">Thiết lập máy này</h2><button class="btn sm ghost" id="su-lang" data-no-i18n>English</button></div>
+    <p class="muted" style="margin:0 0 12px;font-size:13px">Lead chạy dữ liệu, duyệt kết quả rồi tải báo cáo lên cho nhóm. Mỗi thành viên chỉ mở được phần của PIC mình (file .pmkt được mã hoá riêng cho từng người và ký bởi Lead).</p>
+    <div class="grid g2" id="setup-choose">
+      <div class="card">
+        <h2>Tôi là Lead</h2>
+        <label for="su-lead-name">Tên hiển thị</label><input type="text" id="su-lead-name" placeholder="VD: Lead PMKT">
+        <label style="margin-top:8px">Nơi lưu báo cáo chung</label>
+        <div class="chips" role="group" id="su-tr"><button data-tr="supabase" aria-pressed="true">Supabase</button><button data-tr="folder" aria-pressed="false">Thư mục chia sẻ</button></div>
+        <div id="su-tr-supabase">
+          <label for="su-sb-url" style="margin-top:8px">Supabase Project URL</label><input type="text" id="su-sb-url" placeholder="https://xxxx.supabase.co">
+          <label for="su-sb-anon" style="margin-top:8px">anon public key</label><input type="text" id="su-sb-anon">
+        </div>
+        <div id="su-tr-folder" class="hidden">
+          <label for="su-lead-folder" style="margin-top:8px">Thư mục (OneDrive / SharePoint / ổ mạng)</label>
+          <div style="display:flex;gap:6px"><input type="text" id="su-lead-folder"><button class="btn sm" data-pickfolder="su-lead-folder">Chọn…</button></div>
+        </div>
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap"><button class="btn primary" id="su-lead-go">Tạo nhóm</button><button class="btn ghost" id="su-lead-import">Nhận quyền Lead từ file…</button></div>
+      </div>
+      <div class="card">
+        <h2>Tôi là Thành viên</h2>
+        <label for="su-mem-code">Mã thiết lập (Lead gửi, bắt đầu bằng PMKT1:)</label><textarea id="su-mem-code" style="min-height:90px" placeholder="PMKT1:…"></textarea>
+        <div style="margin-top:12px"><button class="btn primary" id="su-mem-go">Kết nối</button></div>
+      </div>
+    </div>
+    <p style="margin:10px 0 0"><button class="btn ghost sm" id="su-skip">Dùng một mình, thiết lập sau</button></p>
+    <div id="setup-done" class="hidden"></div>
+    <p class="muted" id="setup-error" style="color:var(--high);font-size:13px"></p>
   </div>
 </div>
 
@@ -247,6 +286,8 @@
 </div>
 
 <script src="vendor/chart.umd.min.js"></script>
+<script src="i18n_en.js"></script>
+<script src="i18n.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

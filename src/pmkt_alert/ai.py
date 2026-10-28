@@ -124,8 +124,19 @@ def offline(result_json: dict, reason: str) -> dict:
                                    "dropped": 0, "error": reason} for d in result_json["digest"]}}
 
 
+def _needs_claude(d: dict) -> bool:
+    return any(d[k] for k in ("pl_high", "pl_med", "pl_trend_review", "camp_high", "camp_med", "camp_followup"))
+
+
+def planned_calls(result_json: dict, careful: bool = True) -> int:
+    """Claude calls a run makes when every call succeeds: per PIC with alerts draft (+ critic), plus the review."""
+    return sum(2 if careful else 1 for d in result_json["digest"] if _needs_claude(d)) + 1
+
+
 def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, defind_text: str,
-             ineligible: list[dict] | None = None, ask_fn=ask, careful: bool = True) -> dict:
+             ineligible: list[dict] | None = None, ask_fn=ask, careful: bool = True, on_step=None) -> dict:
+    """on_step(step, state, detail, call_finished) – progress for the UI; step is "pic:<PIC>" or "review"."""
+    step = on_step or (lambda *a: None)
     lessons = [x["text"] for x in store.lessons()]
     compare = _comparisons(result_json, store)
     style = store.get_style()
@@ -150,8 +161,10 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
         rows = pic_rows(result_json, pic)
         implicit = [d, context]
         fallback = fallback_slack(d, result_json["as_of"])
-        if not any(d[k] for k in ("pl_high", "pl_med", "pl_trend_review", "camp_high", "camp_med", "camp_followup")):
+        if not _needs_claude(d):
+            step(f"pic:{pic}", "done", "Không có alert – dùng tin nhắn mẫu", False)
             return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0}
+        step(f"pic:{pic}", "running", "Bước 1–2: gom dữ kiện → Claude viết nháp", False)
         inel = [x for x in (ineligible or []) if x.get("pic") == pic]
         implicit = implicit + [v for c in compare.get(pic, {}).values() if isinstance(c, dict) for v in
                                 ([c.get("digest")] if "digest" in c else [c]) if v]
@@ -160,9 +173,11 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
             draft = _verify(call(prompt, INSIGHTS_SCHEMA), rows["all"], implicit)
         except ClaudeError as e:
             errors.append(str(e))
+            step(f"pic:{pic}", "warn", str(e)[:120], True)
             return pic, {"insights": [], "todos": [], "slack": fallback, "dropped": 0, "error": str(e), "steps": 1}
         final, steps = draft, 3
         if careful:
+            step(f"pic:{pic}", "running", f"Bước 3–4: kiểm tra số liệu ({draft['dropped']} câu bị loại) → Claude biên tập", True)
             try:
                 critic = _verify(call(critic_prompt(pic, draft, rows, d, style, lessons), INSIGHTS_SCHEMA), rows["all"], implicit)
                 steps = 5
@@ -171,16 +186,21 @@ def generate(result_json: dict, logic: Logic, store: Store, event_days: dict, de
                          "slack": critic["slack"] or draft["slack"], "dropped": draft["dropped"] + critic["dropped"]}
             except ClaudeError:
                 pass  # the checked draft stands
+        step(f"pic:{pic}", "done", f"Bước {steps}/5 xong · {len(final['insights'])} insight · {len(final['todos'])} to-do"
+             if careful else f"{len(final['insights'])} insight · {len(final['todos'])} to-do", True)
         return pic, {"insights": final["insights"], "todos": final["todos"], "slack": final["slack"] or fallback,
                      "dropped": final["dropped"], "steps": steps}
 
     def review() -> list[dict]:
+        step("review", "running", "Claude rà soát logic trên toàn bộ kết quả + góp ý cũ", False)
         try:
             out = call(review_prompt(result_json, logic, event_days, store.list_feedback()), REVIEW_SCHEMA)
         except ClaudeError as e:
             errors.append(str(e))
+            step("review", "warn", str(e)[:120], True)
             return []
         findings = out["findings"]
+        step("review", "done", f"{len(findings)} phát hiện", True)
         for f in findings:
             if f["kind"] == "param" and not valid_change(f.get("param_key") or "", f.get("proposed_value"), logic):
                 f["kind"] = "rule"
