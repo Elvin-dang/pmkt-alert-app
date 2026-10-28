@@ -3,48 +3,79 @@ import re
 
 import pytest
 
+from fake_supabase import FakeSupabase
 from pmkt_alert.api import Api
 from pmkt_alert.claude import ClaudeError, ClaudeStatus
 from pmkt_alert.store import Store
+from pmkt_alert.supabase import pic_file
 
 OK = lambda: ClaudeStatus(True, "2.1", True, True, 1.0, None)  # noqa: E731
+LEAD = "lead@team.test"
+URL, ANON = "https://p.supabase.co", "ANON"
 
 
 def no_claude(*a, **k):
     raise ClaudeError("x")
 
 
-def member(tmp_path, name, setup):
-    m = Api(Store(tmp_path / name), status_fn=OK, ask_fn=no_claude)
-    return m, m.setup_member(setup)["member_code"]
+def device(tmp_path, name, sb):
+    return Api(Store(tmp_path / name), status_fn=OK, ask_fn=no_claude, sb_opener=sb)
+
+
+def sign_in(api, email):
+    assert "error" not in api.team_connect(URL, ANON)
+    assert "error" not in api.team_send_code(email)
+    return api.team_verify(email, "123456")
 
 
 @pytest.fixture()
 def team(tmp_path, synthetic_paths):
-    share = tmp_path / "share"
-    lead = Api(Store(tmp_path / "lead"), status_fn=OK, ask_fn=no_claude)
-    setup = lead.setup_lead({"type": "folder", "folder": str(share)}, "Lead PMKT")["setup_code"]
-    a, code_a = member(tmp_path, "a", setup)
-    b, code_b = member(tmp_path, "b", setup)
-    assert "error" not in lead.add_member(code_a, "PIC A", "Thành viên A")
-    assert "error" not in lead.add_member(code_b, "PIC B", "Thành viên B")
+    sb = FakeSupabase(LEAD)
+    lead = device(tmp_path, "lead", sb)
+    info = sign_in(lead, LEAD)
+    assert info["role"] == "lead" and info["signed_in"]
+    assert "error" not in lead.add_member("A@Team.test", "Thành viên A", "PIC A")  # stored lower-case
+    assert "error" not in lead.add_member("b@team.test", "Thành viên B", "PIC B")
+    a, b = device(tmp_path, "a", sb), device(tmp_path, "b", sb)
+    assert sign_in(a, "a@team.test")["role"] == "member" and sign_in(b, "b@team.test")["pic"] == "PIC B"
     run = lead.run([str(p) for p in synthetic_paths])
-    return {"lead": lead, "a": a, "b": b, "code_a": code_a, "run": run, "share": share, "setup": setup}
+    return {"sb": sb, "lead": lead, "a": a, "b": b, "run": run, "tmp": tmp_path}
 
 
-def test_no_auto_publish_then_manual_upload(team):
-    assert team["run"]["published"] is None and not list(team["share"].glob("*.pmkt"))
+def test_only_listed_emails_can_sign_in(team):
+    stranger = device(team["tmp"], "s", team["sb"])
+    stranger.team_connect(URL, ANON)
+    assert "chưa được Lead thêm" in stranger.team_send_code("x@else.test")["error"]
+    assert "error" in team["a"].team_verify("a@team.test", "000000")
+
+
+def test_lead_creates_and_manages_pic_accounts(team):
+    lead = team["lead"]
+    rows = {m["email"]: m for m in lead.members()["members"]}
+    assert rows["a@team.test"]["pic"] == "PIC A" and rows["a@team.test"]["status"] == "ready"
+    assert "error" not in lead.add_member("c@team.test", "C", "PIC A")
+    assert {m["email"]: m["status"] for m in lead.members()["members"]}["c@team.test"] == "invited"
+    assert "error" not in lead.update_member("c@team.test", {"pic": "PIC B", "name": "C2"})
+    assert team["sb"].members["c@team.test"]["pic"] == "PIC B"
+    assert "error" in lead.add_member("not-an-email", "x", "PIC A")
+    assert "error" in lead.add_member("c@team.test", "dup", "PIC A")
+
+
+def test_no_auto_upload_then_manual_upload_never_overwrites(team):
+    assert team["run"]["published"] is None and not team["sb"].objects
     up = team["lead"].upload_report(team["run"]["run_id"])
-    assert re.fullmatch(r"PMKT-Alert_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}(-\d{2})?\.pmkt", up["name"])
+    assert re.fullmatch(r"PMKT-Alert_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}(-\d{2})?", up["name"])
     assert up["readers"] == {"PIC A": 1, "PIC B": 1} and "Chưa có PIC" in up["no_readers"]
+    assert set(team["sb"].objects) == {f"{up['name']}/lead.pmkt", f"{up['name']}/{pic_file('PIC A')}",
+                                       f"{up['name']}/{pic_file('PIC B')}"}
     again = team["lead"].upload_report(team["run"]["run_id"])
-    assert again["name"] != up["name"]  # never overwrites
+    assert again["name"] != up["name"]
 
 
 def test_members_see_only_their_pic(team):
     name = team["lead"].upload_report(team["run"]["run_id"])["name"]
     a = team["a"]
-    assert [r["name"] for r in a.list_reports()["reports"]] == [name]
+    assert a.list_reports()["reports"] == [{"name": name}]
     res = a.open_report(name)
     assert {r["pic"] for r in res["result"]["pl"]} == {"PIC A"} and {r["pic"] for r in res["result"]["camp"]} <= {"PIC A"}
     assert [d["pic"] for d in res["result"]["digest"]] == ["PIC A"] and list(res["ai"]["per_pic"]) == ["PIC A"]
@@ -60,54 +91,88 @@ def test_members_see_only_their_pic(team):
     json.dumps(res, allow_nan=False)
 
 
+def test_server_refuses_other_pic_file_even_to_a_modified_app(team):
+    name = team["lead"].upload_report(team["run"]["run_id"])["name"]
+    sb = team["a"]._sb()
+    with pytest.raises(Exception, match="400|Object not found"):
+        sb.download(f"{name}/{pic_file('PIC B')}")
+    with pytest.raises(Exception):
+        sb.download(f"{name}/lead.pmkt")
+
+
 def test_lead_can_open_its_upload_fully(team):
     name = team["lead"].upload_report(team["run"]["run_id"])["name"]
     assert {d["pic"] for d in team["lead"].open_report(name)["result"]["digest"]} >= {"PIC A", "PIC B"}
 
 
-def test_removed_or_unregistered_member(team, tmp_path):
+def test_deactivated_member_loses_access_immediately(team):
     lead = team["lead"]
     old = lead.upload_report(team["run"]["run_id"])["name"]
-    stranger, _ = member(tmp_path, "c", team["setup"])
-    assert "không có phần" in stranger.open_report(old)["error"]
-    lead.remove_member(team["code_a"])
-    new = lead.upload_report(team["run"]["run_id"])["name"]
-    assert "không có phần" in team["a"].open_report(new)["error"] and "error" not in team["a"].open_report(old)
+    assert "error" not in lead.update_member("a@team.test", {"active": False})
+    assert team["a"].list_reports()["reports"] == [] and "error" in team["a"].open_report(old)
+    assert "error" not in lead.remove_member("b@team.test")
+    assert "error" in team["b"].open_report(old)
 
 
-def test_bad_codes(team, tmp_path):
-    assert "error" in team["lead"].add_member("PMKM-AAAAA", "PIC A", "x")
-    assert "error" in Api(Store(tmp_path / "z"), status_fn=OK).setup_member("PMKT1:garbage")
+def test_member_on_new_device_reads_reports_uploaded_after_sign_in(team):
+    a2 = device(team["tmp"], "a2", team["sb"])
+    sign_in(a2, "a@team.test")
+    assert len(team["sb"].members["a@team.test"]["enc_keys"]) == 2
+    name = team["lead"].upload_report(team["run"]["run_id"])["name"]
+    assert "error" not in a2.open_report(name) and "error" not in team["a"].open_report(name)
 
 
 @pytest.mark.parametrize("call", [
     lambda m: m.run([]), lambda m: m.export("PIC A", "/tmp/x.xlsx"), lambda m: m.save_style({}),
     lambda m: m.save_settings({"claude_note": "x"}), lambda m: m.apply_proposals(), lambda m: m.rewrite_message("PIC A"),
     lambda m: m.set_active_logic(1), lambda m: m.team_review(), lambda m: m.submit_feedback({"unit_id": "pl:PL Alpha"}),
-    lambda m: m.upload_report(None), lambda m: m.add_member("PMKM-X", "PIC A", "x"), lambda m: m.delete_report("x.pmkt"),
+    lambda m: m.upload_report(None), lambda m: m.add_member("x@team.test", "x", "PIC A"),
+    lambda m: m.update_member("a@team.test", {"pic": "PIC B"}), lambda m: m.delete_report("x"), lambda m: m.members(),
 ])
 def test_member_cannot_do_lead_actions(team, call):
     assert "Lead" in call(team["a"])["error"]
 
 
 def test_member_settings_allowed_keys(team):
-    assert "error" not in team["a"].save_settings({"language": "en"})
+    assert "error" not in team["a"].save_settings({"language": "en", "ui_lang": "en"})
 
 
-def test_transfer_lead(team, tmp_path):
-    key_file = tmp_path / "lead.pmktkey"
+def test_lead_key_moves_to_new_device(team):
+    key_file = team["tmp"] / "lead.pmktkey"
     assert "error" not in team["lead"].export_lead_key(str(key_file), "chuyen quyen 123")
-    new = Api(Store(tmp_path / "new"), status_fn=OK, ask_fn=no_claude)
-    out = new.import_lead_key(str(key_file), "chuyen quyen 123")
-    assert out["setup_code"] == team["setup"] and len(new.members()["members"]) == 2
-    assert "error" in Api(Store(tmp_path / "bad"), status_fn=OK).import_lead_key(str(key_file), "sai")
-
-
-def test_startup_file_open(team):
+    new = device(team["tmp"], "new", team["sb"])
+    assert sign_in(new, LEAD)["needs_key"] is True
+    assert "error" in new.upload_report(None)
+    assert "error" in new.import_lead_key(str(key_file), "sai mat khau")
+    assert new.import_lead_key(str(key_file), "chuyen quyen 123")["needs_key"] is False
     name = team["lead"].upload_report(team["run"]["run_id"])["name"]
+    assert "error" not in new.open_report(name)
+
+
+def test_lead_key_reset(team):
+    old = team["lead"].upload_report(team["run"]["run_id"])["name"]
+    new = device(team["tmp"], "new", team["sb"])
+    sign_in(new, LEAD)
+    assert new.team_reset_lead_key()["needs_key"] is False
+    assert "error" in team["a"].open_report(old)  # signed with the replaced key
+    assert "khoá Lead" in team["lead"].upload_report(team["run"]["run_id"])["error"]  # stale key never publishes
+
+
+def test_sign_out_forgets_session_and_sign_in_again_keeps_server(team):
     a = team["a"]
-    a._startup_file = str(team["share"] / name)
-    assert a.startup_open()["opened"]["file"] == name and a.startup_open() == {"opened": None}
+    assert a.team_sign_out()["signed_in"] is False
+    assert "error" in a.list_reports()
+    assert "error" not in a.team_connect(URL, "")  # reopened dialog: the anon key field is empty
+    assert "error" not in a.team_send_code("a@team.test") and a.team_verify("a@team.test", "123456")["signed_in"]
+
+
+def test_startup_file_open(team, tmp_path):
+    name = team["lead"].upload_report(team["run"]["run_id"])["name"]
+    f = tmp_path / "x.pmkt"
+    f.write_bytes(team["sb"].objects[f"{name}/{pic_file('PIC A')}"])
+    a = team["a"]
+    a._startup_file = str(f)
+    assert a.startup_open()["opened"]["file"] == "x.pmkt" and a.startup_open() == {"opened": None}
 
 
 def test_register_file_type_commands():
@@ -117,16 +182,16 @@ def test_register_file_type_commands():
     assert (r"Software\Classes\PMKTAlert.Run\shell\open\command", "", '"C:\\Apps\\PMKT-Alert.exe" "%1"') in e
 
 
-def test_supabase_login_stores_refresh_token(tmp_path, monkeypatch):
+def test_setup_sql_has_lead_email(team):
+    sql = team["lead"].supabase_sql("Boss@Team.test")["sql"]
+    assert "'boss@team.test', 'lead'" in sql and "LEAD_EMAIL" not in sql
+
+
+def test_bundled_server_needs_no_url_entry(tmp_path, monkeypatch):
     import pmkt_alert.api as api_mod
-
-    class FakeSB:
-        token = None
-
-        def login(self, email, pw):
-            return "AT", "RT"
-    monkeypatch.setattr(api_mod, "make_transport", lambda cfg, token=None: FakeSB())
-    lead = Api(Store(tmp_path / "l"), status_fn=OK)
-    lead.setup_lead({"type": "supabase", "url": "https://p.supabase.co", "anon": "ANON"}, "Lead")
-    assert lead.lead_login("lead@example.com", "pw")["ok"] is True and lead._secrets()["sb_refresh"] == "RT"
-    assert "LEAD_EMAIL" not in lead.supabase_sql()["sql"] and "lead@example.com" in lead.supabase_sql()["sql"]
+    monkeypatch.setattr(api_mod, "_bundled_team", lambda: {"url": URL, "anon": ANON})
+    sb = FakeSupabase(LEAD)
+    api = device(tmp_path, "x", sb)
+    assert api.team_info()["bundled"] is True and api.team_info()["url"] == URL
+    assert "error" not in api.team_connect() and "error" not in api.team_send_code(LEAD)
+    assert api.team_verify(LEAD, "123456")["role"] == "lead"

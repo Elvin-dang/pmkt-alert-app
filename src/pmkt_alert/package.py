@@ -5,7 +5,7 @@ layout: b"PMKTALRT" | format=2 (1 byte) | header length (4 bytes) | header JSON 
 - part: zip (deflate) → AES-256-GCM with a random part key
 - the part key is wrapped for each reader: ephemeral X25519 → HKDF-SHA256 → AES-GCM (readers are identified
   only by a hash of their public key – no names or PICs in clear)
-- "lead" part: always also readable by the Lead's own key; "pic:X" parts: only the member codes registered for X
+- "lead" part: always also readable by the signing Lead's own key; "pic:X" parts: only the devices of X's members
 - signature over everything before it, checked BEFORE decrypting: members accept only their Lead's files"""
 import base64
 import hashlib
@@ -98,7 +98,7 @@ def read(blob: bytes, my_key: X25519PrivateKey, lead_sign_public: Ed25519PublicK
     files: dict[str, bytes] = {}
     mine = [w for w in header["wraps"] if w["r"] == me]
     if not mine:
-        raise PackageError("File này không có phần dành cho bạn – nhờ Lead thêm mã thành viên của bạn vào đúng PIC")
+        raise PackageError("File này không có phần dành cho bạn – báo cáo được tải lên trước khi bạn đăng nhập trên máy này, hoặc bạn chưa được gán PIC")
     for w in mine:
         try:
             eph = X25519PublicKey.from_public_bytes(_unb64(w["e"]))

@@ -1,7 +1,6 @@
 import pytest
 
-from pmkt_alert.identity import (LeadKeys, MemberKey, member_code, parse_member_code, parse_setup_code,
-                                 setup_code)
+from pmkt_alert.identity import LeadKeys, MemberKey
 from pmkt_alert.package import PackageError, build, read
 
 
@@ -43,19 +42,6 @@ def test_not_a_package(keys):
     lead, a, _ = keys
     with pytest.raises(PackageError, match="không phải file PMKT"):
         read(b"PK\x03\x04 zip", a.private, lead.sign_public)
-
-
-def test_codes_roundtrip(keys):
-    lead, a, _ = keys
-    mc = member_code(a.public)
-    assert mc.startswith("PMKM-") and parse_member_code(mc.lower()) == a.public
-    with pytest.raises(ValueError):
-        parse_member_code("PMKM-AAAAA")
-    sc = setup_code(lead.sign_public, {"type": "supabase", "url": "https://x.supabase.co", "anon": "eyJ.abc"})
-    pub, transport = parse_setup_code(sc)
-    assert pub == lead.sign_public and transport["url"] == "https://x.supabase.co"
-    with pytest.raises(ValueError):
-        parse_setup_code(sc[:-6] + "AAAAAA")
 
 
 def test_keys_serialize(keys):

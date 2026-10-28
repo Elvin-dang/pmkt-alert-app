@@ -93,12 +93,9 @@ def filter_inputs(inputs: Inputs, run: dict, pic: str) -> Inputs:
                   act, inputs.event_days, inputs.defind_text, inputs.sources)
 
 
-def build_parts(run: dict, inputs: Inputs, logic_path: Path, members: list[dict], scorecard_rows: dict) -> dict:
-    """{"lead": (files, []), "pic:X": (files, [member public keys of X])} for package.build."""
-    from .identity import parse_member_code
-    parts = {"lead": (pack_run(run, inputs, logic_path), [])}
-    for pic in sorted({m["pic"] for m in members}):
-        readers = [parse_member_code(m["code"]) for m in members if m["pic"] == pic]
-        part_run = filter_run(run, pic, scorecard_rows.get(pic))
-        parts[f"pic:{pic}"] = (pack_run(part_run, filter_inputs(inputs, run, pic), logic_path), readers)
+def build_parts(run: dict, inputs: Inputs, logic_path: Path, pics: list[str], scorecard_rows: dict) -> dict:
+    """{"lead": full files, "pic:X": only X's files} – each becomes its own encrypted .pmkt."""
+    parts = {"lead": pack_run(run, inputs, logic_path)}
+    for pic in sorted(pics):
+        parts[f"pic:{pic}"] = pack_run(filter_run(run, pic, scorecard_rows.get(pic)), filter_inputs(inputs, run, pic), logic_path)
     return parts

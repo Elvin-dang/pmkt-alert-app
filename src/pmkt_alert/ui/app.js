@@ -543,6 +543,7 @@ async function loadLessons() {
 
 // ------------------------------------------------------------------ settings
 async function loadSettings() {
+  loadRole();
   const [st, set] = await Promise.all([api.get_style(), api.get_settings()]);
   if (bad(st) || bad(set)) return;
   ["language", "pronoun", "length", "tone"].forEach((k) => ($("#st-" + k).value = st[k]));
@@ -920,107 +921,108 @@ function wireDashboard() {
   });
 }
 
-// ------------------------------------------------------------------ team: Lead / Member
+// ------------------------------------------------------------------ team: Supabase sign-in, Lead / Member
 S.role = null;
-const NOT_SETUP = "Chưa thiết lập nhóm";
+const NOT_SIGNED = "Chưa đăng nhập nhóm";
+const STATUS = { ready: ["OK", "SẴN SÀNG"], invited: ["MED", "CHỜ ĐĂNG NHẬP"], disabled: ["INFO", "ĐÃ KHOÁ"] };
 function copyBox(id, text) {
-  return `<div style="display:flex;gap:6px;align-items:flex-start"><div class="code-box" id="${id}" style="flex:1">${esc(text)}</div><button class="btn sm" data-copy="${id}">Copy</button></div>`;
-}
-function trText(t) {
-  if (!t || !t.type) return "—";
-  return t.type === "supabase" ? `Supabase · ${esc(t.url)} · bucket ${esc(t.bucket || "reports")}` : `Thư mục · ${esc(t.folder)}`;
+  return `<div style="display:flex;gap:6px;align-items:flex-start"><div class="code-box" id="${id}" style="flex:1;white-space:pre-wrap;max-height:220px;overflow:auto" data-no-i18n>${esc(text)}</div><button class="btn sm" data-copy="${id}">Copy</button></div>`;
 }
 async function loadRole() {
-  const r = await api.role_info();
+  const r = await api.team_info();
   if (bad(r)) return null;
   S.role = r;
   document.body.classList.toggle("member", r.role === "member");
-  $("#role-badge").textContent = r.role === "lead" ? `Lead · ${r.lead_name}` : r.role === "member" ? "Thành viên · chỉ xem" : NOT_SETUP;
+  $("#role-badge").textContent = !r.signed_in ? NOT_SIGNED : r.role === "lead" ? `Lead · ${r.email}` : `${r.pic || "—"} · chỉ xem`;
   renderTeam();
   return r;
 }
-function renderTeam() {
+function keyHelp() {
+  return `<div class="banner" style="margin:8px 0;display:block"><b>Máy này chưa có khoá ký của Lead.</b> Nhập file khoá Lead (đã xuất từ máy cũ) để tải báo cáo lên.
+    <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap"><button class="btn primary sm" id="lk-import">Nhập file khoá Lead…</button>
+    <button class="btn ghost sm" id="lk-reset">Mất file khoá? Tạo khoá mới</button></div></div>`;
+}
+async function renderTeam() {
   const r = S.role || {};
   const el = $("#team-card");
-  if (!r.role) {
-    el.innerHTML = `<h2>Nhóm</h2><p class="muted" style="margin-top:0">${NOT_SETUP}. Lead tạo nhóm rồi gửi mã thiết lập cho thành viên.</p><button class="btn primary" id="team-setup">Thiết lập nhóm…</button>`;
+  if (!r.signed_in) {
+    el.innerHTML = `<h2>Nhóm</h2><p class="muted" style="margin-top:0">${NOT_SIGNED}. Lead và thành viên đăng nhập bằng email công việc.</p><button class="btn primary" id="team-setup">Đăng nhập nhóm…</button>`;
     return;
   }
   if (r.role === "member") {
-    el.innerHTML = `<h2>Nhóm · Thành viên</h2>
-      <label>Mã thành viên của bạn – gửi cho Lead để được thêm vào nhóm</label>${copyBox("my-member-code", r.member_code || "")}
-      <p class="muted" style="font-size:13px">Nơi lấy báo cáo: ${trText(r.transport)}${r.opened ? ` · đang xem <b>${esc(r.opened.file)}</b>` : ""}</p>
-      <button class="btn ghost sm" id="team-reset">Đặt lại vai trò máy này</button>`;
+    el.innerHTML = `<h2>Nhóm · Thành viên</h2><p style="margin-top:0">${esc(r.name || "")} · <b>${esc(r.email)}</b> · PIC <b>${esc(r.pic || "—")}</b> (chỉ xem)</p>
+      ${r.opened ? `<p class="muted" style="font-size:13px">Đang xem ${esc(r.opened.file)}</p>` : ""}<button class="btn ghost sm" id="team-signout">Đăng xuất</button>`;
     return;
   }
-  const pics = S.run ? [...new Set(S.run.digest.map((d) => d.pic))].filter((p) => p !== NO_PIC) : [];
-  const sb = (r.transport || {}).type === "supabase";
-  el.innerHTML = `<h2>Nhóm · Lead</h2>
-    <label>Mã thiết lập – gửi cho thành viên (không chứa bí mật, chỉ để nhận diện chữ ký của bạn và nơi lưu)</label>${copyBox("setup-code", r.setup_code || "")}
-    <p class="muted" style="font-size:13px">Nơi lưu: ${trText(r.transport)}</p>
-    ${sb ? `<div class="card" style="margin:8px 0;background:var(--muted-bg)"><b>Supabase</b> · ${r.supabase_logged_in ? '<span class="sev OK">ĐÃ ĐĂNG NHẬP</span>' : '<span class="sev MED">CHƯA ĐĂNG NHẬP</span> – cần để tải lên'}
-      <div class="grid g3" style="margin-top:8px"><div><label for="sb-email">Email Lead</label><input type="text" id="sb-email" autocomplete="username"></div>
-      <div><label for="sb-pw">Mật khẩu Supabase</label><input type="password" id="sb-pw" autocomplete="current-password"></div>
-      <div style="display:flex;gap:6px;align-items:flex-end"><button class="btn" id="sb-login">Đăng nhập</button><button class="btn ghost" id="sb-sql">SQL thiết lập…</button></div></div>
-      <div id="sb-sql-box" class="hidden" style="margin-top:8px"></div></div>` : ""}
-    <h3 style="font-size:14px;margin:12px 0 4px">Thành viên (${(r.members || []).length})</h3>
-    <div class="tbl"><table><thead><tr><th>Tên</th><th>PIC được xem</th><th>Mã</th><th></th></tr></thead><tbody>
-      ${(r.members || []).map((m) => `<tr><td>${esc(m.name)}</td><td>${esc(m.pic)}</td><td class="num" style="font-size:12px">${esc(m.code.slice(0, 16))}…</td><td><button class="btn sm ghost" data-rm="${esc(m.code)}">Xoá</button></td></tr>`).join("") || '<tr><td colspan="4" class="muted">Chưa có ai</td></tr>'}
-    </tbody></table></div>
-    <div class="grid g3" style="margin-top:8px">
-      <div><label for="mb-code">Mã thành viên (PMKM-…)</label><input type="text" id="mb-code"></div>
-      <div><label for="mb-pic">PIC</label><input type="text" id="mb-pic" list="mb-pics"><datalist id="mb-pics">${pics.map((p) => `<option>${esc(p)}</option>`).join("")}</datalist></div>
-      <div><label for="mb-name">Tên hiển thị</label><div style="display:flex;gap:6px"><input type="text" id="mb-name"><button class="btn primary" id="mb-add">Thêm</button></div></div>
+  el.innerHTML = `<h2>Nhóm · Lead</h2><p style="margin-top:0"><b>${esc(r.email)}</b> · ${esc(r.url)}</p>${r.needs_key ? keyHelp() : ""}
+    <h3 style="font-size:14px;margin:12px 0 4px">Tài khoản</h3><div id="mb-table"><div class="muted"><span class="spin"></span></div></div>
+    <div class="grid g4" style="margin-top:8px">
+      <div><label for="mb-email">Email</label><input type="text" id="mb-email" autocomplete="off"></div>
+      <div><label for="mb-name">Tên hiển thị</label><input type="text" id="mb-name"></div>
+      <div><label for="mb-pic">PIC</label><input type="text" id="mb-pic" list="mb-pics"><datalist id="mb-pics"></datalist></div>
+      <div><label for="mb-role">Vai trò</label><div style="display:flex;gap:6px"><select id="mb-role"><option value="member">Thành viên (chỉ xem PIC)</option><option value="lead">Lead</option></select><button class="btn primary" id="mb-add">Tạo</button></div></div>
     </div>
-    <p class="muted" style="font-size:12px">Thêm/xoá thành viên có hiệu lực từ lần tải lên tiếp theo. Người bị xoá vẫn mở được các file cũ đã có phần của họ.</p>
+    <p class="muted" style="font-size:12px">Người được tạo đăng nhập bằng chính email đó (mã 6 số gửi qua email). Đổi PIC / khoá tài khoản có hiệu lực ngay; báo cáo tải lên trước khi một người đăng nhập lần đầu sẽ không có phần của họ.</p>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
-      <div><label for="lk-pw">Mật khẩu file chuyển quyền (≥ 8 ký tự)</label><input type="password" id="lk-pw" autocomplete="new-password"></div>
-      <button class="btn" id="lk-export">Xuất khoá Lead…</button>
-      <button class="btn ghost sm" id="team-reset">Đặt lại vai trò máy này</button>
-    </div>`;
+      <div><label for="lk-pw">Mật khẩu file khoá (≥ 8 ký tự)</label><input type="password" id="lk-pw" autocomplete="new-password"></div>
+      <button class="btn" id="lk-export" ${r.needs_key ? "disabled" : ""}>Xuất khoá Lead…</button>
+      <button class="btn ghost sm" id="team-sql">SQL thiết lập…</button>
+      <button class="btn ghost sm" id="team-signout">Đăng xuất</button>
+    </div><div id="team-sql-box" class="hidden" style="margin-top:8px"></div>`;
+  loadMembers();
 }
-function openSetup() { $("#setup-done").classList.add("hidden"); $("#setup-choose").classList.remove("hidden"); $("#setup-error").textContent = ""; $("#setup").classList.add("on"); }
+async function loadMembers() {
+  const m = await api.members();
+  const box = $("#mb-table");
+  if (!box) return;
+  if (m.error) { box.innerHTML = `<div class="empty">${esc(m.error)}</div>`; return; }
+  const pics = S.run ? [...new Set(S.run.digest.map((d) => d.pic))].filter((p) => p !== NO_PIC) : [];
+  $("#mb-pics").innerHTML = [...new Set([...pics, ...m.members.map((x) => x.pic).filter(Boolean)])].map((p) => `<option>${esc(p)}</option>`).join("");
+  box.innerHTML = `<div class="tbl"><table><thead><tr><th>Email</th><th>Tên</th><th>Vai trò</th><th>PIC</th><th>Trạng thái</th><th></th></tr></thead><tbody>
+    ${m.members.map((x) => `<tr data-email="${esc(x.email)}"><td data-no-i18n>${esc(x.email)}</td><td data-no-i18n>${esc(x.name || "")}</td><td>${x.role === "lead" ? "Lead" : "Thành viên"}</td>
+      <td>${x.role === "lead" ? "—" : `<input type="text" class="mb-pic-edit" list="mb-pics" value="${esc(x.pic || "")}" style="width:140px" aria-label="PIC">`}</td>
+      <td><span class="sev ${STATUS[x.status][0]}">${STATUS[x.status][1]}</span></td>
+      <td style="white-space:nowrap">${x.email === S.role.email ? "" : `<button class="btn sm ghost" data-mb="toggle" data-active="${x.active ? 1 : 0}">${x.active ? "Khoá" : "Mở khoá"}</button><button class="btn sm ghost" data-mb="delete">Xoá</button>`}</td></tr>`).join("")}
+  </tbody></table></div>`;
+}
+function openSetup() {
+  const r = S.role || {};
+  $("#setup-error").textContent = "";
+  $("#su-sb-url").value = r.url || "";
+  $("#su-server").classList.toggle("hidden", !!(r.bundled && r.url));
+  $("#su-server-bundled").classList.toggle("hidden", !(r.bundled && r.url));
+  $("#su-email").value = r.email || "";
+  $("#su-code-row").classList.add("hidden");
+  $("#setup").classList.add("on");
+}
 function closeSetup() { $("#setup").classList.remove("on"); }
-function setupDone(html) {
-  $("#setup-choose").classList.add("hidden");
-  $("#setup-done").classList.remove("hidden");
-  $("#setup-done").innerHTML = html + '<div style="margin-top:12px"><button class="btn primary" id="su-close">Xong</button></div>';
-}
-async function setupLead() {
-  const type = $("#su-tr [aria-pressed=true]").dataset.tr;
-  const transport = type === "supabase" ? { type, url: $("#su-sb-url").value.trim(), anon: $("#su-sb-anon").value.trim(), bucket: "reports" }
-    : { type, folder: $("#su-lead-folder").value.trim() };
-  const r = await api.setup_lead(transport, $("#su-lead-name").value.trim());
+async function sendCode() {
+  $("#setup-error").textContent = "";
+  const url = $("#su-sb-url").value.trim(), anon = $("#su-sb-anon").value.trim();
+  const c = await api.team_connect(url, anon);  // blank fields fall back to the server built into the app
+  if (c.error) { $("#setup-error").textContent = c.error; return; }
+  const b = $("#su-send"); b.disabled = true;
+  const r = await api.team_send_code($("#su-email").value.trim());
+  b.disabled = false;
   if (r.error) { $("#setup-error").textContent = r.error; return; }
-  await loadRole();
-  setupDone(`<h2>Đã tạo nhóm</h2><p>Gửi mã thiết lập này cho từng thành viên:</p>${copyBox("su-setup-code", r.setup_code)}
-    <p class="muted" style="font-size:13px">Mỗi thành viên dán mã vào app của họ và gửi lại cho bạn <b>mã thành viên</b> (PMKM-…). Thêm mã đó ở Cài đặt → Nhóm và chọn PIC họ được xem.
-    ${type === "supabase" ? "<br>Supabase: đăng nhập ở Cài đặt → Nhóm và chạy “SQL thiết lập” một lần trong SQL Editor của project." : ""}
-    <br>Nên “Xuất khoá Lead” ra file cất giữ – mất máy là mất quyền ký.</p>`);
+  $("#su-code-row").classList.remove("hidden");
+  $("#su-code").focus();
+  toast("Đã gửi mã – kiểm tra email (cả mục Spam).");
 }
-async function setupMember() {
-  const r = await api.setup_member($("#su-mem-code").value.trim());
+async function verifyCode() {
+  const r = await api.team_verify($("#su-email").value.trim(), $("#su-code").value.trim());
   if (r.error) { $("#setup-error").textContent = r.error; return; }
-  await loadRole();
-  setupDone(`<h2>Đã kết nối</h2><p>Gửi mã thành viên này cho Lead để được thêm vào nhóm:</p>${copyBox("su-member-code", r.member_code)}
-    <p class="muted" style="font-size:13px">Sau khi Lead thêm bạn, các báo cáo tải lên từ đó sẽ có phần của bạn – bấm “Làm mới” ở trang Kết quả.</p>`);
-}
-async function importLeadKey() {
-  const f = await api.pick_file("Khoá Lead", "*.pmktkey");
-  if (bad(f) || !f.path) return;
-  const pw = prompt(I18N.t("Mật khẩu file chuyển quyền"));
-  if (!pw) return;
-  const r = await api.import_lead_key(f.path, pw);
-  if (r.error) { $("#setup-error").textContent = r.error; return; }
-  await loadRole();
   closeSetup();
-  toast("Đã nhận quyền Lead.");
+  await loadRole();
+  toast(r.role === "lead" ? "Đã đăng nhập – Lead." : `Đã đăng nhập – xem PIC ${r.pic}.`);
+  if (r.role === "member") loadReports(true);
+  if (r.needs_key) { go("settings"); loadSettings(); }
 }
 async function loadReports(openNewest) {
   const r = await api.list_reports();
-  if (r.error) { $("#report-list").innerHTML = `<option>${esc(r.error)}</option>`; return; }
+  if (r.error) { $("#report-list").innerHTML = `<option value="">${esc(r.error)}</option>`; return; }
   const cur = S.role && S.role.opened ? S.role.opened.file : null;
-  $("#report-list").innerHTML = r.reports.length ? r.reports.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? "selected" : ""}>${esc(x.name.replace("PMKT-Alert_", "").replace(".pmkt", "").replace("_", " "))}</option>`).join("")
+  $("#report-list").innerHTML = r.reports.length ? r.reports.map((x) => `<option value="${esc(x.name)}" ${x.name === cur ? "selected" : ""}>${esc(x.name.replace("PMKT-Alert_", "").replace("_", " "))}</option>`).join("")
     : "<option value=''>Chưa có báo cáo</option>";
   if (openNewest && r.reports.length && r.reports[0].name !== cur) openReport(r.reports[0].name);
 }
@@ -1041,19 +1043,18 @@ async function uploadReport() {
   if (bad(r)) return;
   $("#published-line").textContent = ` · đã tải lên ${r.name}`;
   const missing = r.no_readers.filter((p) => p !== NO_PIC);
-  toast(`Đã tải lên ${r.name} (${(r.size / 1048576).toFixed(1)} MB) cho ${Object.keys(r.readers).length} PIC.${missing.length ? ` Chưa có thành viên cho: ${missing.join(", ")}.` : ""}`);
+  toast(`Đã tải lên ${r.name} (${(r.size / 1048576).toFixed(1)} MB) cho ${Object.keys(r.readers).length} PIC.${missing.length ? ` Chưa có tài khoản cho: ${missing.join(", ")}.` : ""}${r.waiting.length ? ` Chưa đăng nhập lần nào: ${r.waiting.join(", ")}.` : ""}`);
 }
 function wireTeam() {
-  $("#role-badge").onclick = () => { go("settings"); loadSettings(); };
-  $("#su-tr").addEventListener("click", (e) => {
-    const t = e.target.closest("[data-tr]"); if (!t) return;
-    $$("#su-tr button").forEach((b) => b.setAttribute("aria-pressed", String(b === t)));
-    $("#su-tr-supabase").classList.toggle("hidden", t.dataset.tr !== "supabase");
-    $("#su-tr-folder").classList.toggle("hidden", t.dataset.tr !== "folder");
-  });
-  $("#su-lead-go").onclick = setupLead;
-  $("#su-mem-go").onclick = setupMember;
-  $("#su-lead-import").onclick = importLeadKey;
+  $("#role-badge").onclick = () => { if (!(S.role || {}).signed_in) openSetup(); else { go("settings"); loadSettings(); } };
+  $("#su-send").onclick = sendCode;
+  $("#su-verify").onclick = verifyCode;
+  $("#su-code").addEventListener("keydown", (e) => { if (e.key === "Enter") verifyCode(); });
+  $("#su-server-edit").onclick = () => { $("#su-server").classList.remove("hidden"); $("#su-server-bundled").classList.add("hidden"); };
+  $("#su-sql").onclick = async () => {
+    const r = await api.supabase_sql($("#su-lead-email").value.trim());
+    $("#su-sql-box").innerHTML = r.error ? `<p style="color:var(--high)">${esc(r.error)}</p>` : copyBox("su-sql-text", r.sql);
+  };
   $("#su-skip").onclick = () => { store("setupSkip", "1"); closeSetup(); };
   $("#upload-btn").onclick = uploadReport;
   $("#reload-pmkt").onclick = () => loadReports(false);
@@ -1064,37 +1065,49 @@ function wireTeam() {
     const r = await api.open_local_report(f.path);
     if (!bad(r)) { setRun(r); await loadRole(); go("results"); }
   };
+  document.addEventListener("change", async (e) => {
+    if (!e.target.classList.contains("mb-pic-edit")) return;
+    const email = e.target.closest("tr").dataset.email;
+    if (!bad(await api.update_member(email, { pic: e.target.value.trim() }))) toast("Đã đổi PIC – có hiệu lực từ báo cáo tải lên tiếp theo.");
+  });
   document.addEventListener("click", async (e) => {
     const t = e.target;
     if (t.dataset.copy) { copyText($("#" + t.dataset.copy).textContent); return; }
-    if (t.dataset.pickfolder) { const f = await api.pick_folder(); if (!bad(f) && f.path) $("#" + t.dataset.pickfolder).value = f.path; return; }
-    if (t.dataset.rm) { if (confirm(I18N.t("Xoá thành viên này? Báo cáo tải lên sau sẽ không có phần của họ.")) && !bad(await api.remove_member(t.dataset.rm))) loadRole(); return; }
+    if (t.dataset.mb) {
+      const row = t.closest("tr"), email = row.dataset.email;
+      if (t.dataset.mb === "delete" && confirm(I18N.t("Xoá tài khoản này? Người đó mất quyền xem ngay lập tức."))) { if (!bad(await api.remove_member(email))) loadMembers(); }
+      if (t.dataset.mb === "toggle") { if (!bad(await api.update_member(email, { active: t.dataset.active !== "1" }))) loadMembers(); }
+      return;
+    }
     switch (t.id) {
-      case "su-close": closeSetup(); if (S.role.role === "member") loadReports(true); break;
       case "team-setup": openSetup(); break;
-      case "team-reset":
-        if (confirm(I18N.t(S.role.role === "lead" ? "Đặt lại sẽ xoá khoá Lead trên máy này. Đã xuất khoá Lead ra file chưa?" : "Đặt lại vai trò máy này?")) && !bad(await api.reset_role())) { await loadRole(); openSetup(); }
-        break;
+      case "team-signout": if (!bad(await api.team_sign_out())) { S.run = null; await loadRole(); openSetup(); } break;
       case "mb-add": {
-        const r = await api.add_member($("#mb-code").value.trim(), $("#mb-pic").value.trim(), $("#mb-name").value.trim());
-        if (!bad(r)) { toast("Đã thêm thành viên."); loadRole(); }
+        const r = await api.add_member($("#mb-email").value.trim(), $("#mb-name").value.trim(), $("#mb-pic").value.trim(), $("#mb-role").value);
+        if (!bad(r)) { toast("Đã tạo tài khoản – báo người đó mở app và đăng nhập bằng email này."); ["#mb-email", "#mb-name", "#mb-pic"].forEach((s) => ($(s).value = "")); loadMembers(); }
         break;
       }
-      case "sb-login": {
-        const r = await api.lead_login($("#sb-email").value.trim(), $("#sb-pw").value);
-        if (!bad(r)) { toast("Đã đăng nhập Supabase."); loadRole(); }
-        break;
-      }
-      case "sb-sql": {
+      case "team-sql": {
         const r = await api.supabase_sql();
-        if (!bad(r)) { $("#sb-sql-box").innerHTML = `<p class="muted" style="font-size:12px;margin:0 0 4px">Chạy một lần trong Supabase → SQL Editor (sau khi tạo user Lead ở Authentication):</p>${copyBox("sb-sql-text", r.sql)}`; $("#sb-sql-box").classList.remove("hidden"); }
+        if (!bad(r)) { $("#team-sql-box").innerHTML = copyBox("team-sql-text", r.sql); $("#team-sql-box").classList.toggle("hidden"); }
         break;
       }
       case "lk-export": {
         const r = await api.export_lead_key(null, $("#lk-pw").value);
-        if (!bad(r) && !r.cancelled) toast(`Đã lưu ${r.path}`);
+        if (!bad(r) && !r.cancelled) toast(`Đã lưu ${r.path} – cất giữ cẩn thận.`);
         break;
       }
+      case "lk-import": {
+        const f = await api.pick_file("Khoá Lead", "*.pmktkey");
+        if (bad(f) || !f.path) return;
+        const pw = prompt(I18N.t("Mật khẩu file khoá"));
+        if (!pw) return;
+        if (!bad(await api.import_lead_key(f.path, pw))) { toast("Đã nhập khoá Lead."); loadRole(); }
+        break;
+      }
+      case "lk-reset":
+        if (confirm(I18N.t("Tạo khoá ký mới cho nhóm? Các báo cáo đã tải lên trước đây sẽ không mở được nữa.")) && !bad(await api.team_reset_lead_key())) { toast("Đã tạo khoá mới."); loadRole(); }
+        break;
     }
   });
 }
@@ -1102,8 +1115,8 @@ async function initTeam() {
   wireTeam();
   const r = await loadRole();
   if (!r) return;
-  if (!r.role && !store("setupSkip")) openSetup();
+  if (!r.signed_in && !store("setupSkip")) openSetup();
   const s = await api.startup_open();
   if (!s.error && s.opened) { const res = await api.results(); if (!res.error) setRun(res); await loadRole(); go("results"); }
-  if (r.role === "member") loadReports(!(s && s.opened));
+  if (r.signed_in && r.role === "member") loadReports(!(s && s.opened));
 }

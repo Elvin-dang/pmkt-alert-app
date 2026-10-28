@@ -1,13 +1,8 @@
-"""Keys and codes.
+"""Device keys.
 
-Lead: Ed25519 signing key (members accept only files signed by it) + X25519 key (reads the full Lead part).
-Member: X25519 key; its public half is the *member code* the Lead registers against a PIC.
-Setup code: what the Lead gives members – the Lead's signing public key + where reports live (Supabase or folder).
+Lead: Ed25519 signing key (members accept only files signed by it) + X25519 key (reads the full Lead file).
+Member: X25519 key. Public halves are published to the team's member list at sign-in (supabase.py).
 Secrets on disk are protected for the Windows user account (DPAPI)."""
-import base64
-import hashlib
-import json
-import re
 import sys
 from dataclasses import dataclass
 
@@ -70,48 +65,6 @@ class MemberKey:
     @classmethod
     def from_bytes(cls, b: bytes) -> "MemberKey":
         return cls(X25519PrivateKey.from_private_bytes(b))
-
-
-def _check(raw: bytes) -> bytes:
-    return hashlib.sha256(raw).digest()[:2]
-
-
-def member_code(pub: X25519PublicKey) -> str:
-    raw = raw_public(pub)
-    text = base64.b32encode(raw + _check(raw)).decode().rstrip("=")
-    return "PMKM-" + "-".join(text[i:i + 5] for i in range(0, len(text), 5))
-
-
-def parse_member_code(code: str) -> X25519PublicKey:
-    text = re.sub(r"[^A-Z2-7]", "", code.upper().replace("PMKM", "", 1))
-    try:
-        data = base64.b32decode(text + "=" * (-len(text) % 8))
-    except ValueError:
-        raise ValueError("Mã thành viên không hợp lệ") from None
-    if len(data) != 34 or _check(data[:32]) != data[32:]:
-        raise ValueError("Mã thành viên không hợp lệ – kiểm tra lại từng ký tự")
-    return X25519PublicKey.from_public_bytes(data[:32])
-
-
-def setup_code(lead_sign_public: Ed25519PublicKey, transport: dict) -> str:
-    body = json.dumps({"k": base64.b64encode(raw_public(lead_sign_public)).decode(), "t": transport},
-                      separators=(",", ":")).encode()
-    return "PMKT1:" + base64.urlsafe_b64encode(body + _check(body)).decode().rstrip("=")
-
-
-def parse_setup_code(code: str) -> tuple[Ed25519PublicKey, dict]:
-    text = re.sub(r"\s", "", code)
-    if not text.startswith("PMKT1:"):
-        raise ValueError("Mã thiết lập không hợp lệ (phải bắt đầu bằng PMKT1:)")
-    try:
-        data = base64.urlsafe_b64decode(text[6:] + "=" * (-len(text[6:]) % 4))
-        body, check = data[:-2], data[-2:]
-        if _check(body) != check:
-            raise ValueError
-        d = json.loads(body)
-        return Ed25519PublicKey.from_public_bytes(base64.b64decode(d["k"])), d["t"]
-    except (ValueError, KeyError, json.JSONDecodeError):
-        raise ValueError("Mã thiết lập bị sai hoặc thiếu ký tự – copy lại toàn bộ mã") from None
 
 
 def protect(data: bytes) -> bytes:

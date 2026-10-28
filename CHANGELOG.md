@@ -4,16 +4,17 @@ Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản p
 
 ## v0.1.7 – 28/10/2026
 ### Mới
-- **Lead / Thành viên.** Lead chạy dữ liệu, duyệt kết quả rồi bấm **Tải lên cho nhóm**. Thành viên chỉ xem: không chạy, không sửa, không góp ý, không Copy Message, không xuất Excel.
-- **Mỗi thành viên chỉ thấy phần PIC của mình.** File báo cáo `.pmkt` được nén, mã hoá riêng cho từng thành viên và ký bởi Lead; app chỉ mở được file có chữ ký đúng và có phần dành cho mình. Dashboard của thành viên chỉ có điểm và xu hướng của chính họ (không có bảng xếp hạng).
-- Nơi lưu báo cáo chung: **Supabase Storage** (Lead đăng nhập để tải lên, thành viên chỉ đọc) hoặc **thư mục chia sẻ** (OneDrive / SharePoint / ổ mạng). File tự đặt tên theo ngày giờ tải lên và không bao giờ ghi đè; thành viên bấm **Làm mới** rồi chọn báo cáo muốn xem.
-- Thiết lập: Lead tạo nhóm → gửi **mã thiết lập** cho thành viên → thành viên gửi lại **mã thành viên** → Lead gán mã đó với PIC ở Cài đặt → Nhóm. Có thể xuất / nhận **khoá Lead** (file có mật khẩu) để chuyển sang máy khác.
-- Nhấp đúp file `.pmkt` trên Windows sẽ mở bằng app.
-- **Tiếng Anh / Tiếng Việt:** nút EN/VI trên thanh trên cùng đổi ngôn ngữ giao diện. Ngôn ngữ tin nhắn Claude viết cho PIC vẫn chỉnh ở Cài đặt → Văn phong.
-- **Tiến trình chi tiết + thời gian còn lại:** từng PIC hiện bước đang làm (viết nháp → kiểm tra số liệu → biên tập) và số phần đã xong; thời gian còn lại ước tính theo các lần chạy trước và chính xác dần sau mỗi lần chạy.
+- **Đăng nhập nhóm bằng email** (Supabase): nhập email → nhận mã 6 số → đăng nhập. Không mật khẩu, không phải gửi mã qua lại.
+- **Lead tạo và quản lý tài khoản PIC** ở Cài đặt → Nhóm: email, tên, PIC, vai trò (Lead / Thành viên); đổi PIC, khoá, xoá có hiệu lực ngay. Chỉ email được Lead thêm mới đăng nhập được.
+- **Thành viên chỉ xem, và chỉ phần PIC của mình:** không chạy, không sửa, không góp ý, không Copy Message, không xuất Excel. Dashboard chỉ có điểm và xu hướng của chính họ (không có bảng xếp hạng). Quyền được máy chủ Supabase kiểm tra, không chỉ ẩn nút trong app.
+- **Tải lên cho nhóm:** Lead xem lại kết quả rồi bấm tải lên. Mỗi PIC một file `.pmkt` riêng, nén + mã hoá chỉ cho người của PIC đó, ký bởi Lead; tên theo ngày giờ, không bao giờ ghi đè. Thành viên bấm **Làm mới** rồi chọn báo cáo.
+- Xuất / nhập **khoá Lead** (file có mật khẩu) để chuyển sang máy khác.
+- **Tiếng Anh / Tiếng Việt:** nút EN/VI trên thanh trên cùng. Ngôn ngữ tin nhắn Claude viết cho PIC vẫn chỉnh ở Cài đặt → Văn phong.
+- **Tiến trình chi tiết + thời gian còn lại:** từng PIC hiện bước đang làm (viết nháp → kiểm tra số liệu → biên tập) và số phần đã xong; thời gian còn lại học từ các lần chạy trước.
 ### Thay đổi
-- Chạy xong không tự chia sẻ nữa – Lead xem lại rồi mới tải lên.
-- Kiểm tra quyền ở cả phía app (không chỉ ẩn nút): thao tác của Lead bị từ chối ở chế độ Thành viên.
+- Chạy xong không tự chia sẻ – Lead duyệt rồi mới tải lên.
+### Lưu ý
+- Lead cần thiết lập Supabase một lần (hướng dẫn trong hộp thoại đăng nhập → "Lead lần đầu").
 
 ## v0.1.6 – 27/10/2026
 Bản này gồm toàn bộ thay đổi của v0.1.4 và v0.1.5 (hai bản đó build lỗi nên chưa từng phát hành).

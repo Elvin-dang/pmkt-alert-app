@@ -32,16 +32,34 @@ Data can be `.xlsx` or `.csv` (mixed is fine); the logic file must be `.xlsx`. F
 
 ## Team: Lead and Members
 
-The Lead runs the data and uploads a reviewed report; Members only view, and only their own PIC.
+Everyone signs in with their work email and a 6-digit code (Supabase Auth). The Lead runs the data, reviews it and uploads the report. Members only view, and only their own PIC.
 
-1. **Lead** – first launch → *I'm the Lead* → pick where reports live: Supabase Storage or a shared folder. The app shows a **setup code** (`PMKT1:…`) – send it to each member. It holds the Lead's public signing key and where reports live; it holds no secrets.
-2. **Member** – first launch → *I'm a Member* → paste the setup code. The app shows a **member code** (`PMKM-…`) – send it back to the Lead.
-3. **Lead** – Settings → Team → add each member code and choose the PIC it may see.
-4. After a run, **Upload to team**. The file is named `PMKT-Alert_<date>_<time>.pmkt` and never overwrites an earlier one. Members press **Refresh** and pick a report.
+**One-time setup (Lead)**
+1. Create a Supabase project (the Free plan is enough).
+2. Authentication → Email Templates → *Magic Link*: put `{{ .Token }}` in the body, so the email contains the 6-digit code.
+3. In the app's sign-in dialog, open *First-time Lead*, enter the Lead's email, then copy the SQL and run it in the project's SQL Editor. It creates:
+   - `pmkt_members`: who is Lead, and which PIC each member sees.
+   - The private `reports` bucket.
+   - The row-level security rules.
+   - A guard that only lets listed emails sign up.
+4. Paste the Project URL and anon key (Project Settings → API) into the app, then sign in as the Lead.
+5. Optional: set the repository variables `PMKT_SUPABASE_URL` and `PMKT_SUPABASE_ANON`. Release builds then include them, so people only type their email. The anon key is meant to be public; the rules below protect the data.
 
-A `.pmkt` file is compressed and encrypted: every PIC's part has its own key, wrapped for each member of that PIC (X25519 + AES-GCM). The whole file is signed by the Lead (Ed25519) and checked before anything is opened. Keys live in `secrets.bin`, which is protected with Windows DPAPI. Use *Export Lead key* (password-protected) to move the Lead role to another machine.
+**Accounts.** Under Settings → Team, the Lead creates accounts (email, name, PIC, role). People sign in with that email. Changing a PIC, locking an account or deleting it takes effect immediately.
 
-**Supabase setup (once):** create a project, add the Lead as a user under Authentication, copy the Project URL and the anon key into the Lead setup, then sign in under Settings → Team. Run the SQL shown under *Supabase SQL* in the SQL editor. It creates the private `reports` bucket: everyone can read it, and only the Lead's email can upload or delete. Members never need a Supabase account.
+**Who can do what (enforced by Postgres row-level security, not by the app):**
+- Leads read and write the member list and upload or delete reports.
+- A member can read only their own row and the Leads' public signing keys.
+- A member can download only `<report>/<md5(their PIC)>.pmkt`.
+- A device can publish its own public keys, but can't change its role or PIC, and only a Lead can set a signing key.
+- The rules are tested against a real Postgres in `tests/test_team_sql.py`.
+
+**Encryption on top.** Each upload contains one file per PIC plus a full file for Leads.
+- Each file is encrypted for the devices of the people allowed to read it (X25519 + AES-GCM) and signed by the Lead (Ed25519).
+- Supabase only ever stores encrypted files.
+- Device keys live in `secrets.bin`, protected with Windows DPAPI.
+- A report uploaded before someone's first sign-in on a device doesn't include that device.
+- To move the Lead role to a new machine, use *Export Lead key* (the file is password-protected). If the key file is lost, *Create a new key* works, but older reports will no longer open.
 
 ## Develop
 

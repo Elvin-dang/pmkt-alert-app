@@ -4,8 +4,11 @@ import base64
 import functools
 import json
 import os
+import re
 import threading
+import time
 import traceback
+import urllib.request
 from datetime import date, datetime
 from pathlib import Path
 
@@ -19,15 +22,30 @@ from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
 from .evidence import evidence
 from .export import export_pic
-from .identity import LeadKeys, MemberKey, member_code, parse_member_code, parse_setup_code, protect, setup_code, unprotect
+from .identity import LeadKeys, MemberKey, protect, raw_public, unprotect
 from .package import EXT, PackageError
 from .package import build as build_package
 from .package import read as read_package
 from .progress import Eta
 from .share import build_parts, unpack_run
-from .transport import SUPABASE_SQL, TransportError, make_transport
+from .supabase import LEAD_FILE, Supabase, TeamError, pic_file, setup_sql
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+
+
+EMAIL_RE = re.compile(r"[^@\s']+@[^@\s']+\.[^@\s']+")
+_pub64 = lambda pub: base64.b64encode(raw_public(pub)).decode()  # noqa: E731
+
+
+def _bundled_team() -> dict:
+    """Optional team.json shipped in the release build (Supabase URL + anon key – public by design)."""
+    p = Path(__file__).with_name("team.json")
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+    except ValueError:
+        return {}
 
 
 def _kdf(password: str, salt: bytes) -> bytes:
@@ -69,7 +87,7 @@ def safe(fn):
     def wrapper(self, *a, **k):
         try:
             return fn(self, *a, **k)
-        except (InputError, LogicError, ClaudeError, ValueError, RuntimeError, PermissionError, PackageError, TransportError) as e:
+        except (InputError, LogicError, ClaudeError, ValueError, RuntimeError, PermissionError, PackageError, TeamError) as e:
             return {"error": str(e)}
         except Exception as e:  # never let a traceback reach the UI
             self._log(traceback.format_exc())
@@ -79,7 +97,7 @@ def safe(fn):
 
 class Api:
     def __init__(self, store: Store, ask_fn=ask, status_fn=check_status, release_fn=latest_release,
-                 recent_fn=recent_releases):
+                 recent_fn=recent_releases, sb_opener=urllib.request.urlopen):
         self._store, self._status = store, status_fn
         self._ask = self._with_note(ask_fn)
         self._release, self._recent = release_fn, recent_fn
@@ -90,6 +108,7 @@ class Api:
         self._paths: list[str] = []
         self._eta: Eta | None = None  # time-left estimate of the run in progress
         self._member: dict | None = None  # Member mode: the opened .pmkt (run, inputs, logic path, file)
+        self._sb_opener, self._sb_cache = sb_opener, None  # Supabase HTTP opener (tests: a fake), signed-in client
         self._startup_file: str | None = None  # a .pmkt double-clicked to start the app
 
     # ------------------------------------------------------------- helpers
@@ -117,9 +136,12 @@ class Api:
             self._window.evaluate_js(f"window.onProgress && onProgress({json.dumps(step)}, {json.dumps(state)}, "
                                      f"{json.dumps(detail)}, {json.dumps(extra)})")
 
-    # ------------------------------------------------------------- roles & sharing
+    # ------------------------------------------------------------- team (Supabase) & sharing
     def _role(self) -> str | None:
         return self._store.get_settings().get("role")
+
+    def _team(self) -> dict:
+        return self._store.get_settings().get("team") or {}
 
     def _secrets(self) -> dict:
         p = self._store.base / "secrets.bin"
@@ -133,207 +155,321 @@ class Api:
         except OSError:
             pass
 
+    def _keys(self, email: str | None = None) -> dict:
+        return (self._secrets().get("keys") or {}).get(email or self._team().get("email") or "", {})
+
+    def _save_keys(self, email: str, keys: dict) -> None:
+        sec = self._secrets()
+        sec.setdefault("keys", {})[email] = keys
+        self._save_secrets(sec)
+
     def _lead_keys(self) -> LeadKeys:
-        raw = self._secrets().get("lead_keys")
+        raw = self._keys().get("lead")
         if not raw:
-            raise PermissionError("Máy này chưa có khoá Lead")
+            raise PermissionError("Máy này chưa có khoá Lead – nhập file khoá Lead hoặc tạo khoá mới (Cài đặt → Nhóm)")
         return LeadKeys.from_bytes(base64.b64decode(raw))
 
     def _my_reader_key(self):
-        sec = self._secrets()
-        if sec.get("lead_keys"):
-            return self._lead_keys().enc_private
-        if sec.get("member_key"):
-            return MemberKey.from_bytes(base64.b64decode(sec["member_key"])).private
-        raise PermissionError("Máy này chưa được thiết lập (Cài đặt → Nhóm)")
-
-    def _lead_sign_public(self):
         if self._role() == "lead":
-            return self._lead_keys().sign_public
-        return parse_setup_code(self._store.get_settings().get("setup_code") or "")[0]
+            return self._lead_keys().enc_private
+        raw = self._keys().get("member")
+        if not raw:
+            raise PermissionError("Chưa đăng nhập nhóm (Cài đặt → Nhóm)")
+        return MemberKey.from_bytes(base64.b64decode(raw)).private
 
-    def _transport(self, auth: bool = False):
-        cfg = self._store.get_settings().get("transport") or {}
-        token = None
-        if auth and cfg.get("type") == "supabase":
-            rt = self._secrets().get("sb_refresh")
-            if not rt:
-                raise PermissionError("Lead cần đăng nhập Supabase trước khi tải lên (Cài đặt → Nhóm)")
-            t = make_transport(cfg)
-            access, new_rt = t.refresh(rt)
-            self._save_secrets({**self._secrets(), "sb_refresh": new_rt})
-            return t
-        return make_transport(cfg, token)
+    def _sb(self) -> Supabase:
+        """Signed-in client; the access token is refreshed at most every 45 minutes."""
+        t = self._team()
+        sb_cfg = (t.get("url"), t.get("anon"))
+        if self._sb_cache and self._sb_cache[0] == sb_cfg and time.monotonic() - self._sb_cache[1] < 45 * 60:
+            return self._sb_cache[2]
+        session = self._secrets().get("session")
+        if not session or not t.get("url"):
+            raise PermissionError("Chưa đăng nhập nhóm (Cài đặt → Nhóm)")
+        sb = Supabase(t["url"], t["anon"], opener=self._sb_opener)
+        try:
+            new_rt = sb.refresh(session["refresh"])
+        except TeamError as e:
+            raise PermissionError(f"Phiên đăng nhập đã hết hạn – đăng nhập lại ({e})") from None
+        self._save_secrets({**self._secrets(), "session": {**session, "refresh": new_rt}})
+        self._sb_cache = (sb_cfg, time.monotonic(), sb)
+        return sb
+
+    def _lead_signs(self, sb: Supabase | None = None) -> list:
+        """Public signing keys of the active Leads (members may read Lead rows); cached for offline file opens."""
+        try:
+            sb = sb or self._sb()
+            signs = [r["sign_pub"] for r in sb.members() if r["role"] == "lead" and r["active"] and r.get("sign_pub")]
+            self._store.save_settings({"team": {**self._team(), "lead_signs": signs}})
+        except (PermissionError, TeamError):
+            signs = self._team().get("lead_signs") or []
+        return [Ed25519PublicKey.from_public_bytes(base64.b64decode(x)) for x in signs]
+
+    def _register_device(self, sb: Supabase, row: dict, email: str) -> bool:
+        """Create/keep this device's keys and publish their public halves. Returns needs_key (Lead without the
+        signing key the team trusts: import the Lead key file or reset it)."""
+        keys = self._keys(email)
+        if row["role"] == "lead":
+            if not keys.get("lead"):
+                if row.get("sign_pub"):
+                    return True
+                keys = {**keys, "lead": base64.b64encode(LeadKeys.new().to_bytes()).decode()}
+                self._save_keys(email, keys)
+            lead = LeadKeys.from_bytes(base64.b64decode(keys["lead"]))
+            sign = _pub64(lead.sign_public)
+            if row.get("sign_pub") not in (None, sign):
+                return True
+            sb.register_keys(_pub64(lead.enc_public), sign)
+            return False
+        if not keys.get("member"):
+            keys = {**keys, "member": base64.b64encode(MemberKey.new().to_bytes()).decode()}
+            self._save_keys(email, keys)
+        sb.register_keys(_pub64(MemberKey.from_bytes(base64.b64decode(keys["member"])).public), None)
+        return False
 
     def _open_blob(self, blob: bytes, name: str) -> dict:
-        meta, files = read_package(blob, self._my_reader_key(), self._lead_sign_public())
+        key, err = self._my_reader_key(), None
+        for sign in self._lead_signs():
+            try:
+                meta, files = read_package(blob, key, sign)
+                break
+            except PackageError as e:
+                err = e
+                if "chữ ký" not in str(e):
+                    raise
+        else:
+            raise err or PackageError("Chưa có khoá ký của Lead – đăng nhập nhóm trước")
         run, inputs, logic_bytes, logic_name = unpack_run(files)
         logic_path = self._store.base / "shared" / logic_name
         logic_path.parent.mkdir(parents=True, exist_ok=True)
         logic_path.write_bytes(logic_bytes)
-        self._member = {"run": {**run, "file": name, "published_by": meta.get("by"), "published_at": meta.get("at"),
-                                "as_of_meta": meta.get("as_of")}, "inputs": inputs, "logic_path": logic_path}
-        return self._member
+        if self._role() == "member":
+            self._member = {"run": {**run, "file": name, "published_by": meta.get("by"), "published_at": meta.get("at"),
+                                    "as_of_meta": meta.get("as_of")}, "inputs": inputs, "logic_path": logic_path}
+            return self._member
+        return {"run": {**run, "file": name, "published_by": meta.get("by"), "published_at": meta.get("at")}}
+
+    def _report_path(self, name: str) -> str:
+        if self._role() == "lead":
+            return f"{name}/{LEAD_FILE}"
+        return f"{name}/{pic_file(self._team().get('pic') or '')}"
 
     def _member_state(self) -> dict:
         if self._member:
             return self._member
-        reports = self._transport().list()
+        reports = self._sb().reports()
         if not reports:
             raise ValueError("Chưa có báo cáo nào – chờ Lead tải lên")
-        return self._open_blob(self._transport().download(reports[0]["name"]), reports[0]["name"])
-
-    def _setup_code(self) -> str:
-        return setup_code(self._lead_keys().sign_public, self._store.get_settings().get("transport") or {})
+        return self._open_blob(self._sb().download(self._report_path(reports[0])), reports[0])
 
     @safe
-    def role_info(self) -> dict:
-        st = self._store.get_settings()
-        out = {"role": st.get("role"), "transport": {k: v for k, v in (st.get("transport") or {}).items() if k != "anon"},
-               "lead_name": st.get("lead_name") or ""}
-        if st.get("role") == "lead" and self._secrets().get("lead_keys"):
-            out["setup_code"] = self._setup_code()
-            out["supabase_logged_in"] = bool(self._secrets().get("sb_refresh"))
-            out["members"] = st.get("members") or []
-        if st.get("role") == "member" and self._secrets().get("member_key"):
-            out["member_code"] = member_code(MemberKey.from_bytes(base64.b64decode(self._secrets()["member_key"])).public)
-            if self._member:
-                out["opened"] = {k: self._member["run"].get(k) for k in ("file", "published_by", "published_at")}
+    def team_info(self) -> dict:
+        t, st = self._team(), self._store.get_settings()
+        bundled = _bundled_team()
+        out = {"url": t.get("url") or bundled.get("url") or "", "has_anon": bool(t.get("anon") or bundled.get("anon")),
+               "bundled": bool(bundled), "signed_in": bool(self._secrets().get("session")), "role": st.get("role"),
+               **{k: t.get(k) for k in ("email", "pic", "name")}, "needs_key": bool(t.get("needs_key"))}
+        if self._member:
+            out["opened"] = {k: self._member["run"].get(k) for k in ("file", "published_by", "published_at")}
         return out
 
     @safe
-    def setup_lead(self, transport: dict, lead_name: str = "") -> dict:
-        make_transport(transport)  # validates the config
-        keys = LeadKeys.new()
-        self._save_secrets({"lead_keys": base64.b64encode(keys.to_bytes()).decode()})
-        self._store.save_settings({"role": "lead", "transport": transport, "lead_name": lead_name or "Lead", "members": []})
-        return self.role_info()
+    def team_connect(self, url: str = "", anon: str = "") -> dict:
+        bundled = _bundled_team()
+        t = self._team()
+        url = (url or t.get("url") or bundled.get("url") or "").strip()
+        anon = (anon or (t.get("anon") if url == t.get("url") else None) or bundled.get("anon") or "").strip()
+        Supabase(url, anon)  # validates
+        self._store.save_settings({"team": {**self._team(), "url": url, "anon": anon}})
+        self._sb_cache = None
+        return self.team_info()
 
     @safe
-    def lead_login(self, email: str, password: str) -> dict:
-        if self._role() != "lead":
-            raise PermissionError(LEAD_ONLY)
-        t = make_transport(self._store.get_settings().get("transport") or {})
-        _, refresh = t.login(email, password)
-        self._save_secrets({**self._secrets(), "sb_refresh": refresh})
-        self._store.save_settings({"lead_email": email})
-        return {"ok": True}
+    def team_send_code(self, email: str) -> dict:
+        t = self._team()
+        if not t.get("url"):
+            raise ValueError("Nhập Supabase URL và anon key trước")
+        if not EMAIL_RE.fullmatch(email.strip()):
+            raise ValueError("Email không hợp lệ")
+        Supabase(t["url"], t["anon"], opener=self._sb_opener).send_code(email)
+        return {"sent": True}
 
     @safe
-    def supabase_sql(self) -> dict:
-        return {"sql": SUPABASE_SQL.replace("LEAD_EMAIL", self._store.get_settings().get("lead_email") or "LEAD_EMAIL")}
-
-    @safe
-    def setup_member(self, code: str) -> dict:
-        _, transport = parse_setup_code(code)
-        sec = self._secrets()
-        key = MemberKey.from_bytes(base64.b64decode(sec["member_key"])) if sec.get("member_key") else MemberKey.new()
-        self._save_secrets({"member_key": base64.b64encode(key.to_bytes()).decode()})
-        self._store.save_settings({"role": "member", "setup_code": code.strip(), "transport": transport})
+    def team_verify(self, email: str, code: str) -> dict:
+        t, email = self._team(), email.strip().lower()
+        sb = Supabase(t["url"], t["anon"], opener=self._sb_opener)
+        refresh = sb.verify(email, code)
+        row = sb.member(email)
+        if not row or not row["active"]:
+            raise PermissionError("Tài khoản này chưa được Lead kích hoạt")
+        self._save_secrets({**self._secrets(), "session": {"email": email, "refresh": refresh}})
+        self._sb_cache = ((t["url"], t["anon"]), time.monotonic(), sb)
+        needs_key = self._register_device(sb, row, email)
         self._member = None
-        return {**self.role_info(), "member_code": member_code(key.public)}
+        self._store.save_settings({"role": row["role"], "team": {**t, "email": email, "pic": row.get("pic"),
+                                                                  "name": row.get("name"), "needs_key": needs_key}})
+        self._lead_signs(sb)
+        return self.team_info()
+
+    @safe
+    def team_sign_out(self) -> dict:
+        try:
+            self._sb().sign_out()
+        except (PermissionError, TeamError):
+            pass
+        sec = self._secrets()
+        sec.pop("session", None)
+        self._save_secrets(sec)
+        self._sb_cache, self._member = None, None
+        self._store.save_settings({"role": None})
+        return self.team_info()
+
+    @safe
+    def supabase_sql(self, lead_email: str = "") -> dict:
+        return {"sql": setup_sql(lead_email or self._team().get("email") or "")}
 
     @safe
     @lead_only
     def members(self) -> dict:
-        return {"members": self._store.get_settings().get("members") or []}
+        rows = self._sb().members()
+        for r in rows:
+            r["status"] = "disabled" if not r["active"] else "ready" if r.get("enc_keys") else "invited"
+            r.pop("enc_keys", None)
+        return {"members": rows}
 
     @safe
     @lead_only
-    def add_member(self, code: str, pic: str, name: str = "") -> dict:
-        parse_member_code(code)
-        code = code.strip().upper()
-        members = [m for m in (self._store.get_settings().get("members") or []) if m["code"] != code]
-        members.append({"code": code, "pic": pic, "name": name or pic, "added": datetime.now().isoformat(timespec="seconds")})
-        self._store.save_settings({"members": members})
-        return {"members": members}
+    def add_member(self, email: str, name: str, pic: str, role: str = "member") -> dict:
+        email = email.strip().lower()
+        if not EMAIL_RE.fullmatch(email):
+            raise ValueError("Email không hợp lệ")
+        if role not in ("lead", "member") or (role == "member" and not pic.strip()):
+            raise ValueError("Thành viên cần có PIC")
+        self._sb().add_member({"email": email, "role": role, "name": name.strip() or email,
+                               "pic": pic.strip() if role == "member" else None})
+        return self.members()
 
     @safe
     @lead_only
-    def remove_member(self, code: str) -> dict:
-        members = [m for m in (self._store.get_settings().get("members") or []) if m["code"] != code.strip().upper()]
-        self._store.save_settings({"members": members})
-        return {"members": members}
+    def update_member(self, email: str, fields: dict) -> dict:
+        clean = {k: v for k, v in fields.items() if k in ("pic", "name", "role", "active")}
+        self._sb().update_member(email, clean)
+        return self.members()
+
+    @safe
+    @lead_only
+    def remove_member(self, email: str) -> dict:
+        self._sb().delete_member(email)
+        return self.members()
 
     @safe
     @lead_only
     def upload_report(self, run_id: str | None = None) -> dict:
-        """Lead, after reviewing a run: encrypt per PIC, sign, upload as PMKT-Alert_<date>_<time>.pmkt."""
+        """Lead, after reviewing a run: one file per PIC (encrypted for that PIC's members) + the full file for
+        Leads, all signed, uploaded under PMKT-Alert_<date>_<time>/."""
+        sb = self._sb()
+        lead = self._lead_keys()
+        me = sb.member(self._team().get("email") or "")
+        if not me or me.get("sign_pub") != _pub64(lead.sign_public):
+            raise PermissionError("khoá Lead trên máy này không còn là khoá của nhóm – nhập file khoá Lead mới")
         run = self._store.load_run(run_id) if run_id else self._latest()
         if not run:
             raise ValueError("Không tìm thấy lần chạy")
-        members = self._store.get_settings().get("members") or []
+        rows = [r for r in sb.members() if r["active"]]
+        pub = lambda k: X25519PublicKey.from_public_bytes(base64.b64decode(k))  # noqa: E731
+        readers: dict[str, list] = {}
+        counts: dict[str, int] = {}
+        for r in rows:
+            if r["role"] == "member" and r.get("pic") and r.get("enc_keys"):
+                readers.setdefault(r["pic"], []).extend(pub(k) for k in r["enc_keys"])
+                counts[r["pic"]] = counts.get(r["pic"], 0) + 1
+        other_leads = [pub(k) for r in rows if r["role"] == "lead" for k in r.get("enc_keys") or []
+                       if k != _pub64(lead.enc_public)]
         logic_path = next((p for v, p in self._store.logic_versions() if v == run["result"]["logic_version"]),
                           self._store.active_logic())
         sc = scorecard(run["result"], self._store.get_settings().get("score_weights") or {})
-        rows = {p["pic"]: p for p in sc["pics"]}
-        parts = build_parts(run, self._ensure_inputs(), logic_path, members, rows)
+        parts = build_parts(run, self._ensure_inputs(), logic_path, list(readers), {p["pic"]: p for p in sc["pics"]})
         now = datetime.now()
-        blob = build_package(parts, {"by": self._store.get_settings().get("lead_name") or "Lead",
-                                     "at": now.isoformat(timespec="seconds"), "as_of": run["result"]["as_of"],
-                                     "app": __version__}, self._lead_keys())
-        t = self._transport(auth=True)
-        existing = set()
-        try:
-            existing = {r["name"] for r in t.list()}
-        except Exception:
-            pass
-        name = f"PMKT-Alert_{now:%Y-%m-%d_%H-%M}{EXT}"
-        if name in existing:
-            name = f"PMKT-Alert_{now:%Y-%m-%d_%H-%M-%S}{EXT}"
-        t.upload(name, blob)
-        counts = {}
-        for m in members:
-            counts[m["pic"]] = counts.get(m["pic"], 0) + 1
+        meta = {"by": self._team().get("name") or "Lead", "at": now.isoformat(timespec="seconds"),
+                "as_of": run["result"]["as_of"], "app": __version__}
+        name = f"PMKT-Alert_{now:%Y-%m-%d_%H-%M}"
+        if name in set(sb.reports()):
+            name = f"PMKT-Alert_{now:%Y-%m-%d_%H-%M-%S}"
+        size = 0
+        for path, part, who in [(LEAD_FILE, "lead", other_leads)] + [(pic_file(p), f"pic:{p}", readers[p]) for p in readers]:
+            blob = build_package({part: (parts[part], who)}, meta, lead)
+            sb.upload(f"{name}/{path}", blob)
+            size += len(blob)
         pics = {d["pic"] for d in run["result"]["digest"]}
         self._store.save_run_field(run["run_id"], "uploaded", (run.get("uploaded") or []) + [name])
-        return {"name": name, "size": len(blob), "readers": counts, "no_readers": sorted(pics - set(counts))}
+        waiting = sorted(r["email"] for r in rows if r["role"] == "member" and not r.get("enc_keys"))
+        return {"name": name, "size": size, "readers": counts, "no_readers": sorted(pics - set(counts)), "waiting": waiting}
 
     @safe
     def list_reports(self) -> dict:
-        return {"reports": self._transport().list()}
+        return {"reports": [{"name": n} for n in self._sb().reports()]}
 
     @safe
     def open_report(self, name: str) -> dict:
-        return self._open_blob(self._transport().download(name), name)["run"]
+        return self._open_blob(self._sb().download(self._report_path(name)), name)["run"]
 
     @safe
     @lead_only
     def delete_report(self, name: str) -> dict:
-        self._transport(auth=True).delete(name)
+        self._sb().delete_report(name)
         return {"ok": True}
 
     @safe
     @lead_only
     def export_lead_key(self, path: str | None, password: str) -> dict:
         if len(password or "") < 8:
-            raise ValueError("Mật khẩu file chuyển quyền cần ít nhất 8 ký tự")
+            raise ValueError("Mật khẩu file khoá cần ít nhất 8 ký tự")
+        raw = self._lead_keys().to_bytes()
         if not path:
             import webview
             picked = self._window.create_file_dialog(webview.FileDialog.SAVE, save_filename="PMKT-Lead.pmktkey")
             if not picked:
                 return {"cancelled": True}
             path = picked if isinstance(picked, str) else picked[0]
-        st = self._store.get_settings()
-        payload = json.dumps({"keys": self._secrets()["lead_keys"], "members": st.get("members") or [],
-                              "transport": st.get("transport"), "lead_name": st.get("lead_name")}).encode()
+        payload = json.dumps({"keys": base64.b64encode(raw).decode(), "email": self._team().get("email")}).encode()
         salt, nonce = os.urandom(16), os.urandom(12)
-        Path(path).write_bytes(b"PMKTKEY2" + salt + nonce + AESGCM(_kdf(password, salt)).encrypt(nonce, payload, b"PMKTKEY2"))
+        Path(path).write_bytes(b"PMKTKEY3" + salt + nonce + AESGCM(_kdf(password, salt)).encrypt(nonce, payload, b"PMKTKEY3"))
         return {"path": str(path)}
 
     @safe
     def import_lead_key(self, path: str, password: str) -> dict:
         blob = Path(path).read_bytes()
-        if not blob.startswith(b"PMKTKEY2"):
-            raise ValueError("Không phải file chuyển quyền Lead (.pmktkey)")
+        if not blob.startswith(b"PMKTKEY3"):
+            raise ValueError("Không phải file khoá Lead (.pmktkey) của phiên bản này")
         try:
-            d = json.loads(AESGCM(_kdf(password, blob[8:24])).decrypt(blob[24:36], blob[36:], b"PMKTKEY2"))
+            d = json.loads(AESGCM(_kdf(password, blob[8:24])).decrypt(blob[24:36], blob[36:], b"PMKTKEY3"))
         except Exception:
-            raise ValueError("Sai mật khẩu file chuyển quyền") from None
-        self._save_secrets({"lead_keys": d["keys"]})
-        self._store.save_settings({"role": "lead", "members": d["members"], "transport": d["transport"],
-                                   "lead_name": d.get("lead_name") or "Lead"})
-        return self.role_info()
+            raise ValueError("Sai mật khẩu file khoá") from None
+        if self._role() != "lead":
+            raise PermissionError("Đăng nhập bằng tài khoản Lead trước khi nhập khoá")
+        email = self._team()["email"]
+        self._save_keys(email, {**self._keys(email), "lead": d["keys"]})
+        sb = self._sb()
+        needs = self._register_device(sb, sb.member(email), email)
+        self._store.save_settings({"team": {**self._team(), "needs_key": needs}})
+        if needs:
+            raise ValueError("File khoá này không phải khoá hiện tại của nhóm")
+        return self.team_info()
+
+    @safe
+    @lead_only
+    def team_reset_lead_key(self) -> dict:
+        """New signing key for the team (lost key file). Reports signed with the old key no longer open."""
+        if self._role() != "lead":
+            raise PermissionError(LEAD_ONLY)
+        email = self._team()["email"]
+        lead = LeadKeys.new()
+        self._save_keys(email, {**self._keys(email), "lead": base64.b64encode(lead.to_bytes()).decode()})
+        sb = self._sb()
+        sb.register_keys(_pub64(lead.enc_public), _pub64(lead.sign_public), reset=True)
+        self._store.save_settings({"team": {**self._team(), "needs_key": False}})
+        self._lead_signs(sb)
+        return self.team_info()
 
     @safe
     def pick_file(self, label: str, pattern: str) -> dict:
@@ -342,14 +478,6 @@ class Api:
         import webview
         picked = self._window.create_file_dialog(webview.FileDialog.OPEN, file_types=(f"{label} ({pattern})",))
         return {"path": (picked[0] if isinstance(picked, (list, tuple)) else picked) if picked else None}
-
-    @safe
-    def reset_role(self) -> dict:
-        """Forget this machine's role and keys (a Lead should export the key file first)."""
-        self._store.save_settings({"role": None, "setup_code": None})
-        (self._store.base / "secrets.bin").unlink(missing_ok=True)
-        self._member = None
-        return self.role_info()
 
     @safe
     def startup_open(self) -> dict:
@@ -644,7 +772,7 @@ class Api:
     @safe
     def results(self, run_id: str | None = None) -> dict:
         if self._role() == "member":
-            return self._open_blob(self._transport().download(run_id), run_id)["run"] if run_id else self._latest()
+            return self.open_report(run_id) if run_id else self._latest()
         return self._store.load_run(run_id) if run_id else self._latest()
 
     @safe
@@ -730,7 +858,7 @@ class Api:
     def history(self) -> dict:
         if self._role() == "member":
             return {"runs": [{"run_id": r["name"], "as_of": None, "logic_version": None, "alert_count": None,
-                              "feedback_count": None} for r in self._transport().list()[:30]],
+                              "feedback_count": None} for r in self.list_reports().get("reports", [])[:30]],
                     "logic_versions": []}
         active = self._store.active_logic()
         return {"runs": self._store.list_runs(),
