@@ -470,3 +470,28 @@ def test_progress_sends_eta_and_learns_step_times(tmp_path, synthetic_paths):
     assert any(e[0].startswith("pic:") for e in events) and events[-1][3]["eta"] == 0
     learned = api._store.get_settings()["step_times"]
     assert {"load", "rules", "claude_call"} <= set(learned)
+
+
+def test_input_files_have_modified_time_and_detail(tmp_path, synthetic_paths):
+    import os
+    from datetime import datetime
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    tracker = next(p for p in synthetic_paths if p.name == "tracker.xlsx")
+    os.utime(tracker, (datetime(2026, 10, 27, 14, 5).timestamp(),) * 2)
+    roles = api.detect([str(p) for p in synthetic_paths])["roles"]
+    assert roles["tracker"]["modified"] == "2026-10-27T14:05:00"
+    d = api.file_detail([roles["tracker"]["path"]])
+    f = d["files"][0]
+    assert f["name"] == "tracker.xlsx" and f["modified"] == "2026-10-27T14:05:00" and f["size"] > 0
+    raw = next(s for s in f["sheets"] if s["name"] == "raw_sso_us")
+    assert raw["rows"] > 0 and "ordered_gmv_usd" in raw["columns"] and len(raw["preview"]) <= 8
+    assert raw["dates"]["column"] and raw["dates"]["min"] <= raw["dates"]["max"]
+    json.dumps(d, allow_nan=False)
+    csv = tmp_path / "ads.csv"
+    csv.write_text("report_date,campaign_id,spend_usd\n2026-10-01,1,2.5\n2026-10-02,1,3\n", encoding="utf-8")
+    c = api.file_detail([str(csv)])["files"][0]
+    assert c["sheets"][0]["rows"] == 2 and c["sheets"][0]["dates"]["max"] == "2026-10-02"
+    vn = tmp_path / "vn.csv"
+    vn.write_text("Ngày,spend\n02/10/2026,1\n25/10/2026,2\n", encoding="utf-8")
+    assert api.file_detail([str(vn)])["files"][0]["sheets"][0]["dates"] == {"column": "Ngày", "min": "2026-10-02", "max": "2026-10-25"}
+    assert "error" in api.file_detail([str(tmp_path / "nope.xlsx")])

@@ -122,11 +122,44 @@ function setPill(level, text, title) {
 }
 
 // ------------------------------------------------------------------ run screen
+const DAILY = new Set(["tracker", "ads", "activity"]);
+function ago(iso) {
+  const t = new Date(iso), now = new Date();
+  const days = Math.round((new Date(now.toDateString()) - new Date(t.toDateString())) / 864e5);
+  const hm = `${String(t.getHours()).padStart(2, "0")}:${String(t.getMinutes()).padStart(2, "0")}`;
+  return { days, text: days === 0 ? `hôm nay ${hm}` : days === 1 ? `hôm qua ${hm}` : `${ddmm(iso)}/${iso.slice(0, 4)} ${hm} · ${days} ngày trước` };
+}
 function slot(role) {
   const r = S.roles && S.roles[role];
-  return `<div class="slot"><svg class="i" aria-hidden="true"><use href="#file"/></svg><div><div class="name">${esc(r ? r.name : ROLE_NAME[role])}</div>
-    <div class="meta">${r ? `${esc(ROLE_NAME[role])} · ${r.size_mb} MB` : "Chưa có file"}</div></div>
+  const m = r && r.modified ? ago(r.modified) : null;
+  const stale = m && DAILY.has(role) && m.days >= 2;
+  return `<div class="slot ${r ? "clickable" : ""}" ${r ? `role="button" tabindex="0" data-slot="${role}" aria-label="Xem chi tiết ${esc(r.name)}"` : ""}>
+    <svg class="i" aria-hidden="true"><use href="#file"/></svg><div style="min-width:0"><div class="name">${esc(r ? r.name : ROLE_NAME[role])}</div>
+    <div class="meta">${r ? `${esc(ROLE_NAME[role])} · ${r.size_mb ? r.size_mb : "<0.1"} MB` : "Chưa có file"}</div>
+    ${m ? `<div class="meta" style="${stale ? "color:var(--med);font-weight:600" : ""}" title="Lần lưu gần nhất (Last modified)">Sửa lần cuối: ${m.text}${stale ? " – data có thể đã cũ" : ""}</div>` : ""}</div>
     <span class="st sev ${r ? "OK" : "MED"}">${r ? "HỢP LỆ" : "THIẾU"}</span></div>`;
+}
+async function openFileDetail(role) {
+  const r = S.roles[role];
+  $("#fd-title").textContent = r.name;
+  $("#fd-body").innerHTML = '<div class="muted"><span class="spin"></span> Đang đọc file…</div>';
+  $("#fd").classList.add("on");
+  const d = await api.file_detail(r.paths || [r.path]);
+  if (d.error) { $("#fd-body").innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+  $("#fd-body").innerHTML = d.files.map((f) => {
+    const m = ago(f.modified);
+    return `<div class="card" style="margin-bottom:10px">
+      <h3 style="margin:0 0 8px;font-size:14px" data-no-i18n>${esc(f.name)}</h3>
+      <dl class="kv"><dt>Vai trò</dt><dd>${esc(ROLE_NAME[f.role] || f.role || "—")}</dd>
+        <dt>Sửa lần cuối</dt><dd><b>${m.text}</b></dd><dt>Dung lượng</dt><dd>${(f.size / 1048576).toFixed(2)} MB</dd>
+        <dt>Thư mục</dt><dd class="num" style="word-break:break-all" data-no-i18n>${esc(f.folder)}</dd></dl>
+      ${f.sheets.map((sh) => `<details class="evsec" ${f.sheets.length === 1 ? "open" : ""}><summary><b data-no-i18n>${esc(sh.name)}</b> · <span class="num">${sh.rows.toLocaleString("en-US")}</span> dòng · ${sh.columns.length} cột${sh.dates.column ? ` · dữ liệu <span class="num">${ddmm(sh.dates.min)}/${sh.dates.min.slice(0, 4)} – ${ddmm(sh.dates.max)}/${sh.dates.max.slice(0, 4)}</span>` : ""}</summary>
+        ${sh.dates.column ? `<p class="muted" style="font-size:12px;margin:6px 0">Khoảng ngày theo cột <code data-no-i18n>${esc(sh.dates.column)}</code></p>` : ""}
+        ${sh.preview.rows.length ? `<div class="tbl" style="max-height:260px" data-no-i18n><table><thead><tr>${sh.preview.columns.map((c) => `<th>${esc(c)}</th>`).join("")}</tr></thead>
+          <tbody>${sh.preview.rows.map((row) => `<tr>${row.map((v) => `<td class="${typeof v === "number" ? "n" : ""}">${v == null ? "" : esc(v)}</td>`).join("")}</tr>`).join("")}</tbody></table></div>
+          <p class="muted" style="font-size:12px;margin:4px 0 0">${sh.preview.rows.length} dòng đầu${sh.columns.length > sh.preview.columns.length ? ` · ${sh.preview.columns.length}/${sh.columns.length} cột đầu` : ""}</p>` : '<div class="empty">Sheet trống</div>'}
+      </details>`).join("")}</div>`;
+  }).join("");
 }
 function renderSlots() {
   $("#slots-data").innerHTML = ["tracker", "ads", "activity"].map(slot).join("");
@@ -313,6 +346,7 @@ function filterBar() {
     <select id="f-trend" aria-label="Trend">${opts(trends.map((t) => [t, t]), S.f.trend, "Mọi trend")}</select>
     <select id="f-status" aria-label="Trạng thái">${opts([["CHƯA ACTION", "Chưa action"], ["ĐÃ ACTION", "Đã action (follow-up)"], ["ACTION CŨ", "Action cũ"]], S.f.status, "Mọi trạng thái")}</select>
     <button class="btn sm ghost" id="f-reset">Xoá lọc</button>
+    <span style="flex:1"></span><button class="btn sm" id="cols-btn" aria-haspopup="true"><svg class="i" aria-hidden="true"><use href="#cols"/></svg>Cột</button>
   </div>`;
 }
 const SEV_OK = (s, f) => !f || (f === "HM" ? s === "HIGH" || s === "MED" : s === f);
@@ -327,9 +361,96 @@ function sortRows(rows) {
   const dir = natural * S.f.dir;
   return rows.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * dir || (SEV[a.pacing_sev ?? a.sev] ?? 3) - (SEV[b.pacing_sev ?? b.sev] ?? 3); });
 }
-function th(label, key, cls = "") {
-  const on = S.f.sort === key;
-  return `<th class="${cls} sortable" data-sort="${key}" aria-sort="${on ? (S.f.dir === 1 ? "ascending" : "descending") : "none"}">${label}${on ? (S.f.dir === 1 ? " ▾" : " ▴") : ""}</th>`;
+function th(c) {
+  const on = c.sort && S.f.sort === c.sort;
+  const info = `<button class="colinfo" data-col="${c.key}" aria-label="Định nghĩa ${esc(c.label)}" title="Định nghĩa"><svg class="i" aria-hidden="true"><use href="#info"/></svg></button>`;
+  return `<th class="${c.cls || ""}${c.sort ? " sortable" : ""}" ${c.sort ? `data-sort="${c.sort}" aria-sort="${on ? (S.f.dir === 1 ? "ascending" : "descending") : "none"}"` : ""}><span class="thw">${c.label}${on ? (S.f.dir === 1 ? " ▾" : " ▴") : ""}${info}</span></th>`;
+}
+function colInfo(btn) {
+  const c = COLS.find((x) => x.key === btn.dataset.col), d = c.def, pop = $("#colpop");
+  pop.innerHTML = `<div style="display:flex;align-items:center;gap:8px"><b style="flex:1">${esc(c.label)}</b>
+      ${c.fixed ? "" : `<button class="btn sm ghost" data-hidecol="${c.key}">Ẩn cột</button>`}<button class="btn sm ghost" data-closepop aria-label="Đóng">✕</button></div>
+    <p style="margin:6px 0">${esc(d.what)}</p>
+    ${d.formula ? `<div class="poplab">Công thức</div><div class="code-box" style="font-size:12px">${esc(d.formula)}</div>` : ""}
+    <div class="poplab">Lấy từ</div><ul>${d.map.map((m) => `<li>${esc(m)}</li>`).join("")}</ul>
+    ${d.note ? `<p class="muted" style="font-size:12px;margin:4px 0 0">${esc(d.note)}</p>` : ""}`;
+  const r = btn.getBoundingClientRect();
+  pop.classList.remove("hidden");
+  const w = pop.offsetWidth;
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - w - 8)) + "px";
+  pop.style.top = Math.min(r.bottom + 6, innerHeight - pop.offsetHeight - 8) + "px";
+  pop.querySelector("[data-closepop]").focus();
+}
+function colChooser(btn) {
+  const pop = $("#colpop"), hide = hiddenCols(), v3 = S.run.model === "score_v3";
+  pop.innerHTML = `<div style="display:flex;align-items:center"><b style="flex:1">Hiện / ẩn cột</b><button class="btn sm ghost" data-closepop aria-label="Đóng">✕</button></div>
+    ${COLS.filter((c) => !c.v3 || v3).map((c) => `<label class="colchk"><input type="checkbox" data-togglecol="${c.key}" ${hide.has(c.key) && !c.fixed ? "" : "checked"} ${c.fixed ? "disabled" : ""}> ${esc(c.label)}</label>`).join("")}
+    <button class="btn sm ghost" data-showall style="margin-top:6px">Hiện tất cả</button>`;
+  const r = btn.getBoundingClientRect();
+  pop.classList.remove("hidden");
+  pop.style.left = Math.max(8, Math.min(r.right - pop.offsetWidth, innerWidth - pop.offsetWidth - 8)) + "px";
+  pop.style.top = r.bottom + 6 + "px";
+}
+function setHidden(set) { store("hiddenCols", JSON.stringify([...set])); renderResults(); }
+// Result columns: header, cells (PL row / campaign row), sort key and the definition shown by the ⓘ button.
+// Definitions follow the code (aggregate.py, rules/, evidence.py) – keep them in sync when a formula changes.
+const COLS = [
+  { key: "name", label: "Product Line / Campaign", sort: "name", fixed: true,
+    def: { what: "PL là Product Line; bấm dòng PL để xem các campaign của PL đó.",
+      map: ["PL: Product Info › product_line_old, nối ASIN → SKU → PL", "PIC: Product Info › cột PIC của tháng (v3: PMKT PIC_Final)", "Campaign: ads_camp › campaign_name, gán vào PL theo ASIN quảng cáo"] },
+    pl: (p, kids, open) => `<td><b>${esc(p.pl)}</b>${kids.length ? ` <span class="muted">(${kids.length})</span>` : ""}</td>`,
+    camp: (c) => `<td class="muted" title="${esc(c.campaign)}">${esc(c.campaign)}</td>` },
+  { key: "sev", label: "Mức", sort: "sev",
+    def: { what: "Mức độ ưu tiên của cảnh báo: HIGH (xử lý ngay), MED (trong tuần), LOW (theo dõi).",
+      formula: "PL: theo rule pacing đầu tiên khớp · Campaign: theo ACoS camp ÷ ACoS PL, số click và excess spend",
+      map: ["Ngưỡng: Alert_Logic › Config (vd. “Excess spend để lên HIGH”)"] },
+    pl: (p) => `<td>${sev(p.pacing_sev)}</td>`, camp: (c) => `<td>${sev(c.sev)}</td>` },
+  { key: "action", label: "Pacing / Action",
+    def: { what: "Việc nên làm với PL / campaign.",
+      formula: "PL (Ver 1): rule đầu tiên khớp theo thứ tự NO PLAN → KHÔNG CHẠY → SCALE DOWN → OPTIMIZE → SCALE UP → BUDGET CAP → CHECK → MAINTAIN, dựa trên GMV pace, Spend pace và TACoS ÷ target. PL (v3): theo Điểm và khung Department. Campaign: theo action của PL + ACoS camp ÷ ACoS PL; trạng thái (đã / chưa action) lấy từ Activity Log.",
+      map: ["Ngưỡng: Alert_Logic › Config", "Trạng thái campaign: Activity Log › campaign + ngày action"] },
+    pl: (p) => `<td class="lab" style="color:${actionColor(p.pacing_action, p.pacing_sev)}">${esc(short(p.pacing_action))}</td>`,
+    camp: (c) => `<td class="lab" style="color:${actionColor(c.base_action, "")}">${esc(c.final_label || short(c.base_action))}</td>` },
+  { key: "trend", label: "Trend L7D",
+    def: { what: "Xu hướng 7 ngày gần nhất (L7D) so với 7 ngày trước đó (P7D).",
+      formula: "PL: Δ Spend, Δ ACoS, Δ TACoS so với ngưỡng → tạo key, tra bảng Matrix_PL ra nhãn · Campaign: Δ ACoS và Δ Spend của campaign",
+      map: ["PL: raw_sso_us (spend, ppc_ordered_gmv_usd, ordered_gmv_usd)", "Campaign: ads_camp (spend_usd, sales_14d)", "Ngưỡng: Alert_Logic › Config (Spend / ACoS / TACoS) + sheet Matrix_PL"] },
+    pl: (p) => `<td class="lab">${esc(p.trend_label || "—")}</td>`,
+    camp: (c) => `<td class="muted">${esc(c.camp_trend ? c.camp_trend.replace("7D: ", "") : "")}</td>` },
+  { key: "gmv", label: "GMV %", sort: "gmv", cls: "n",
+    def: { what: "Tiến độ GMV tháng so với target.", formula: "GMV MTD ÷ target GMV tháng",
+      map: ["GMV MTD: raw_sso_us › ordered_gmv_usd, từ ngày 1 tới ngày data", "Target: KPI › GMV của tháng, cộng các ASIN của PL"],
+      note: "So với time gone: GMV % ÷ time gone = GMV pace (1× là đúng tiến độ)." },
+    pl: (p) => `<td class="n">${pct(p.pct_gmv)}</td>`, camp: () => "<td></td>" },
+  { key: "spend", label: "Spend %", sort: "spend", cls: "n",
+    def: { what: "Tiến độ chi tiêu ads tháng so với target.", formula: "Spend MTD ÷ target spend tháng",
+      map: ["Spend MTD: raw_sso_us › sp_spend + sb_spend + sd_spend", "Target: KPI › Spend_final của tháng"],
+      note: "Spend % ÷ time gone = Spend pace." },
+    pl: (p) => `<td class="n">${pct(p.pct_spend)}</td>`, camp: () => "<td></td>" },
+  { key: "tacos", label: "TACoS", sort: "tacos", cls: "n",
+    def: { what: "PL: TACoS tháng / target TACoS. Campaign: ACoS của campaign so với ACoS chung của PL.",
+      formula: "TACoS = Spend MTD ÷ GMV MTD · Target TACoS = target spend ÷ target GMV · Campaign: (spend L7D ÷ sales L7D của camp) ÷ (spend L7D ÷ sales L7D của mọi camp trong PL)",
+      map: ["raw_sso_us (spend, ordered_gmv_usd) · KPI (GMV, Spend_final)", "Campaign: ads_camp › spend_usd, sales_14d"] },
+    pl: (p) => `<td class="n">${pct(p.actual_tacos, 1)} <span class="muted">/${pct(p.target_tacos, 1)}</span></td>`,
+    camp: (c) => `<td class="n">ACoS ${num(c.acos_ratio) ? Number(c.acos_ratio).toFixed(2) + "×" : "—"}</td>` },
+  { key: "dspend", label: "Δ Spend", sort: "dspend", cls: "n",
+    def: { what: "Thay đổi chi tiêu 7 ngày gần nhất so với 7 ngày trước đó.", formula: "Spend L7D ÷ Spend P7D − 1",
+      map: ["PL: raw_sso_us › sp_spend + sb_spend + sd_spend", "Campaign: ads_camp › spend_usd"] },
+    pl: (p) => `<td class="n">${signed(p.d_spend)}</td>`, camp: (c) => `<td class="n">${signed(c.d_spend)}</td>` },
+  { key: "score", label: "Điểm", sort: "score", cls: "n", v3: true,
+    def: { what: "Điểm tổng hợp của PL (chỉ với file logic mô hình chấm điểm v3). Âm = nên giảm, dương = có thể tăng.",
+      formula: "Σ(w × s) ÷ Σw, với s1…s6 = (TACoS ÷ target − 1), (TACoS ÷ target Dept − 1), −(Ads dependency ÷ benchmark − 1), Δ TACoS, GMV pace − 1, Spend pace − 1; mỗi s chia độ nhạy × 100, giới hạn ±100",
+      map: ["Trọng số w1–w6 và độ nhạy: Alert_Logic › Config"] },
+    pl: (p) => `<td class="n">${p.score != null ? Math.round(p.score) : "—"}</td>`, camp: () => "<td></td>" },
+  { key: "excess", label: "Excess $", sort: "excess", cls: "n",
+    def: { what: "Chi tiêu L7D vượt mức hợp lý – số tiền có thể cắt.", formula: "Campaign: MAX(0, spend L7D − sales L7D × ACoS L7D của PL) · PL: cộng excess của các campaign",
+      map: ["ads_camp › spend_usd, sales_14d (7 ngày gần nhất)"] },
+    pl: (p) => `<td class="n">${p._excess ? money(p._excess) : "—"}</td>`, camp: (c) => `<td class="n">${money(c.excess)}</td>` },
+];
+function hiddenCols() { try { return new Set(JSON.parse(store("hiddenCols") || "[]")); } catch { return new Set(); } }
+function shownCols() {
+  const hide = hiddenCols(), v3 = S.run.model === "score_v3";
+  return COLS.filter((c) => (!c.v3 || v3) && (c.fixed || !hide.has(c.key)));
 }
 function alertsTable() {
   const f = S.f, q = f.q.trim().toLowerCase();
@@ -344,27 +465,20 @@ function alertsTable() {
   const visible = sortRows(pls);
   if (!visible.length) return '<div class="empty">Không có dòng nào khớp bộ lọc.</div>';
   const sent = new Set(S.feedbackUnits || []);
-  const scoreCol = S.run.model === "score_v3";
+  const cols = shownCols();
   const rows = visible.map((p) => {
     const kids = sortRows(byPl[p.pl] || []);
     const open = S.open.has(p.pl) || (q && kids.length);
-    const color = actionColor(p.pacing_action, p.pacing_sev);
     const head = `<tr class="expandable" data-pl="${esc(p.pl)}" aria-expanded="${!!open}"><td>${kids.length ? `<svg class="i" aria-hidden="true" style="transform:rotate(${open ? 90 : 0}deg)"><use href="#chev"/></svg>` : ""}</td>
-      <td><b>${esc(p.pl)}</b>${kids.length ? ` <span class="muted">(${kids.length})</span>` : ""}</td><td>${sev(p.pacing_sev)}</td>
-      <td class="lab" style="color:${color}">${esc(short(p.pacing_action))}</td><td class="lab">${esc(p.trend_label || "—")}</td>
-      <td class="n">${pct(p.pct_gmv)}</td><td class="n">${pct(p.pct_spend)}</td><td class="n">${pct(p.actual_tacos, 1)} <span class="muted">/${pct(p.target_tacos, 1)}</span></td>
-      <td class="n">${signed(p.d_spend)}</td>${scoreCol ? `<td class="n">${p.score != null ? Math.round(p.score) : "—"}</td>` : ""}<td class="n">${p._excess ? money(p._excess) : "—"}</td>
+      ${cols.map((c) => c.pl(p, kids, open)).join("")}
       <td class="acts">${evBtn(p.unit_id)}${fbBtn(p.unit_id, `${p.pl} · ${short(p.pacing_action)}`, sent.has(p.unit_id))}</td></tr>`;
-    const children = open ? kids.map((c) => `<tr class="child"><td></td><td class="muted" title="${esc(c.campaign)}">${esc(c.campaign)}</td><td>${sev(c.sev)}</td>
-      <td class="lab" style="color:${actionColor(c.base_action, "")}">${esc(c.final_label || short(c.base_action))}</td><td class="muted">${esc(c.camp_trend ? c.camp_trend.replace("7D: ", "") : "")}</td><td></td><td></td>
-      <td class="n">ACoS ${num(c.acos_ratio) ? Number(c.acos_ratio).toFixed(2) + "×" : "—"}</td><td class="n">${signed(c.d_spend)}</td>
-      ${scoreCol ? "<td></td>" : ""}<td class="n">${money(c.excess)}</td>
+    const children = open ? kids.map((c) => `<tr class="child"><td></td>${cols.map((col) => col.camp(c)).join("")}
       <td class="acts">${evBtn(c.unit_id)}${fbBtn(c.unit_id, `${c.campaign} · ${short(c.final_label || c.base_action)}`, sent.has(c.unit_id))}</td></tr>`).join("") : "";
     return head + children;
   }).join("");
-  return `<div class="tbl"><table><thead><tr><th></th>${th("Product Line / Campaign", "name")}${th("Mức", "sev")}<th>Pacing / Action</th><th>Trend L7D</th>
-    ${th("GMV %", "gmv", "n")}${th("Spend %", "spend", "n")}${th("TACoS", "tacos", "n")}${th("Δ Spend", "dspend", "n")}${scoreCol ? th("Điểm", "score", "n") : ""}${th("Excess $", "excess", "n")}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="muted" style="font-size:12px">${visible.length} PL · bấm tiêu đề cột để sắp xếp · “Bằng chứng” mở dữ liệu gốc.</p>`;
+  const hiddenN = COLS.filter((c) => (!c.v3 || S.run.model === "score_v3") && !c.fixed && hiddenCols().has(c.key)).length;
+  return `<div class="tbl"><table><thead><tr><th></th>${cols.map((c) => th(c)).join("")}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="muted" style="font-size:12px">${visible.length} PL · bấm tiêu đề cột để sắp xếp · ⓘ xem định nghĩa · “Bằng chứng” mở dữ liệu gốc.${hiddenN ? ` · Đang ẩn ${hiddenN} cột` : ""}</p>`;
 }
 function todosHtml(mine) {
   if (!mine || (mine.error && !mine.todos.length)) return claudeMissing(mine);
@@ -669,11 +783,34 @@ function wire() {
   $("#pic").onchange = (e) => { S.pic = e.target.value; S.open.clear(); renderResults(); };
   $("#copy-slack").onclick = copySlack;
   $("#export").onclick = async () => { if (!S.pic) return; const r = await api.export(S.pic, null, S.runId); if (!bad(r) && r.path) toast("Đã xuất: " + r.path); };
+  const pop = $("#colpop");
+  const closePop = () => pop.classList.add("hidden");
+  pop.addEventListener("click", (e) => {
+    if (e.target.closest("[data-closepop]")) closePop();
+    const h = e.target.closest("[data-hidecol]");
+    if (h) { const set = hiddenCols(); set.add(h.dataset.hidecol); closePop(); setHidden(set); }
+    if (e.target.closest("[data-showall]")) { closePop(); setHidden(new Set()); }
+  });
+  pop.addEventListener("change", (e) => {
+    const k = e.target.dataset.togglecol; if (!k) return;
+    const set = hiddenCols(); e.target.checked ? set.delete(k) : set.add(k); setHidden(set);
+  });
+  document.addEventListener("click", (e) => { if (!pop.classList.contains("hidden") && !pop.contains(e.target) && !e.target.closest(".colinfo,#cols-btn")) closePop(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closePop(); });
+  for (const id of ["#slots-data", "#slots-setting"]) {
+    $(id).addEventListener("click", (e) => { const t = e.target.closest("[data-slot]"); if (t) openFileDetail(t.dataset.slot); });
+    $(id).addEventListener("keydown", (e) => { const t = e.target.closest("[data-slot]"); if (t && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openFileDetail(t.dataset.slot); } });
+  }
+  $("#fd-close").onclick = () => $("#fd").classList.remove("on");
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("#fd").classList.remove("on"); });
   $("#results-body").addEventListener("click", (e) => {
     const ev = e.target.closest(".evb");
     if (ev) { e.stopPropagation(); openEvidence(ev.dataset.ev.split("|")); return; }
     const fb = e.target.closest(".fb");
     if (fb) { e.stopPropagation(); openFb(fb.dataset.unit, fb.dataset.label); return; }
+    const ci = e.target.closest(".colinfo");
+    if (ci) { e.stopPropagation(); colInfo(ci); return; }
+    if (e.target.closest("#cols-btn")) { colChooser(e.target.closest("#cols-btn")); return; }
     if (e.target.closest("#f-reset")) { S.f = { ...F_DEFAULT }; renderResults(); return; }
     const sortTh = e.target.closest("th[data-sort]");
     if (sortTh) { const k = sortTh.dataset.sort; S.f.dir = S.f.sort === k ? -S.f.dir : 1; S.f.sort = k; renderResults(); return; }
@@ -1071,19 +1208,31 @@ async function loadMembers() {
       <td style="white-space:nowrap">${x.email === S.role.email ? "" : `<button class="btn sm ghost" data-mb="reset">Đặt lại mật khẩu</button><button class="btn sm ghost" data-mb="toggle" data-active="${x.active ? 1 : 0}">${x.active ? "Khoá" : "Mở khoá"}</button><button class="btn sm ghost" data-mb="delete">Xoá</button>`}</td></tr>`).join("")}
   </tbody></table></div>`;
 }
+function setupError(msg) {
+  $("#setup-error").textContent = msg || "";
+  $("#setup-error").classList.toggle("hidden", !msg);
+}
 function openSetup() {
   const r = S.role || {};
-  $("#setup-error").textContent = r.configured === false ? "App chưa có máy chủ nhóm – cập nhật app lên bản mới nhất." : "";
-  $("#su-email").value = r.email || "";
+  setupError(r.configured === false ? "App chưa có máy chủ nhóm – cập nhật app lên bản mới nhất." : "");
+  $("#su-email").value = r.email || store("lastEmail") || "";
   $("#su-pw").value = "";
+  $("#su-ver").textContent = S.update && S.update.current ? `PMKT Alert v${S.update.current}` : "PMKT Alert";
   $("#setup").classList.add("on");
+  setTimeout(() => ($("#su-email").value ? $("#su-pw") : $("#su-email")).focus(), 50);
 }
 function closeSetup() { $("#setup").classList.remove("on"); }
-async function signIn() {
-  const b = $("#su-signin"); b.disabled = true;
-  const r = await api.team_sign_in($("#su-email").value.trim(), $("#su-pw").value);
-  b.disabled = false;
-  if (r.error) { $("#setup-error").textContent = r.error; return; }
+async function signIn(e) {
+  if (e) e.preventDefault();
+  const email = $("#su-email").value.trim(), pw = $("#su-pw").value;
+  if (!email || !pw) { setupError(!email ? "Nhập email." : "Nhập mật khẩu."); (!email ? $("#su-email") : $("#su-pw")).focus(); return; }
+  const b = $("#su-signin");
+  b.disabled = true; b.innerHTML = '<span class="spin"></span> Đang đăng nhập…';
+  setupError("");
+  const r = await api.team_sign_in(email, pw);
+  b.disabled = false; b.textContent = I18N.t("Đăng nhập");
+  if (r.error) { setupError(r.error); $("#su-pw").select(); return; }
+  store("lastEmail", email);
   $("#su-pw").value = "";
   closeSetup();
   await loadRole();
@@ -1121,8 +1270,17 @@ async function uploadReport() {
 }
 function wireTeam() {
   $("#role-badge").onclick = () => { if (!(S.role || {}).signed_in) openSetup(); else { go("settings"); loadSettings(); } };
-  $("#su-signin").onclick = signIn;
-  $("#su-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); });
+  $("#su-form").addEventListener("submit", signIn);
+  $("#su-eye").onclick = () => {
+    const show = $("#su-pw").type === "password";
+    $("#su-pw").type = show ? "text" : "password";
+    $("#su-eye").setAttribute("aria-pressed", String(show));
+    $("#su-eye").setAttribute("aria-label", show ? "Ẩn mật khẩu" : "Hiện mật khẩu");
+    $("#su-pw").focus();
+  };
+  const caps = (e) => { if (e.getModifierState) $("#su-caps").classList.toggle("hidden", !e.getModifierState("CapsLock")); };
+  $("#su-pw").addEventListener("keydown", caps);
+  $("#su-pw").addEventListener("keyup", caps);
   $("#upload-btn").onclick = uploadReport;
   $("#reload-pmkt").onclick = () => loadReports(false);
   $("#report-list").onchange = (e) => openReport(e.target.value);

@@ -10,6 +10,9 @@ Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản p
 - **Tải lên cho nhóm:** Lead xem lại kết quả rồi bấm tải lên. Mỗi PIC một file `.pmkt` riêng, nén + mã hoá chỉ cho người của PIC đó, ký bởi Lead; tên theo ngày giờ, không bao giờ ghi đè. Thành viên bấm **Làm mới** rồi chọn báo cáo.
 - Xuất / nhập **khoá Lead** (file có mật khẩu) để chuyển Lead sang máy khác.
 - **Tiếng Anh / Tiếng Việt:** nút EN/VI trên thanh trên cùng. Ngôn ngữ tin nhắn Claude viết cho PIC vẫn chỉnh ở Cài đặt → Văn phong.
+- **Màn hình đăng nhập mới:** toàn trang, hiện/ẩn mật khẩu, cảnh báo Caps Lock, báo lỗi ngay dưới ô nhập, nhớ email lần trước.
+- **Chạy dữ liệu:** mỗi file hiện thời điểm sửa lần cuối (file data cũ hơn 2 ngày được tô vàng). Bấm vào file để xem chi tiết: thư mục, dung lượng, từng sheet (số dòng, số cột, khoảng ngày của dữ liệu) và vài dòng đầu.
+- **Kết quả:** mỗi cột có nút ⓘ giải thích chỉ số – công thức và lấy từ file / cột nào. Nút **Cột** để ẩn / hiện cột (app nhớ lựa chọn).
 - **Phải đăng nhập trước khi dùng app.** Chưa đăng nhập thì không thấy dữ liệu và không chạy được gì.
 - **Dashboard thêm 5 biểu đồ:** tiến độ GMV & spend so với time gone theo PIC; mức cảnh báo (HIGH / MED / theo dõi) theo PIC; bản đồ PL (GMV pace vs spend pace – thấy ngay PL tiêu nhanh mà GMV chậm); top 10 PL theo excess spend; tỷ trọng GMV theo tuần.
 - **Tiến trình chi tiết + thời gian còn lại:** từng PIC hiện bước đang làm (viết nháp → kiểm tra số liệu → biên tập) và số phần đã xong; thời gian còn lại học từ các lần chạy trước.

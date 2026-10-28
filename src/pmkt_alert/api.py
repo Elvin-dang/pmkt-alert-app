@@ -40,6 +40,57 @@ EMAIL_RE = re.compile(r"[^@\s']+@[^@\s']+\.[^@\s']+")
 _pub64 = lambda pub: base64.b64encode(raw_public(pub)).decode()  # noqa: E731
 
 
+def _mtime(f: Path) -> str:
+    return datetime.fromtimestamp(f.stat().st_mtime).isoformat(timespec="seconds")
+
+
+def _cell(v):
+    if v is None or (isinstance(v, float) and v != v):
+        return None
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()[:10] if not isinstance(v, datetime) or (v.hour, v.minute) == (0, 0) else v.isoformat(timespec="minutes")
+    if isinstance(v, float):
+        return round(v, 4)
+    if hasattr(v, "item"):
+        return _cell(v.item())
+    return v if isinstance(v, (int, bool)) else str(v)[:80]
+
+
+@functools.lru_cache(maxsize=32)
+def _file_detail_cached(path: str, mtime: float, size: int) -> dict:
+    import pandas as pd
+    from .xlsx import is_csv, read_sheet, sheet_names
+    p = Path(path)
+    sheets = []
+    for name in ([None] if is_csv(p) else sheet_names(p)):
+        df = read_sheet(p, name)
+        dates = {"column": None, "min": None, "max": None}
+        for col in df.columns:
+            if "date" in col.lower() or "ngày" in col.lower():
+                first = next((str(v) for v in df[col] if v not in (None, "")), "")
+                iso = bool(re.match(r"\d{4}-\d{2}-\d{2}", first))  # 2026-10-02 vs 02/10/2026 (day first, VN)
+                d = pd.to_datetime(df[col], errors="coerce", format="mixed", dayfirst=not iso).dropna()
+                if len(d):
+                    dates = {"column": col, "min": d.min().date().isoformat(), "max": d.max().date().isoformat()}
+                    break
+        cols = list(df.columns)[:30]
+        sheets.append({"name": name or p.stem, "rows": int(len(df)), "columns": list(df.columns), "dates": dates,
+                       "preview": {"columns": cols, "rows": [[_cell(v) for v in r] for r in df[cols].head(8).itertuples(index=False)]}})
+    return {"name": p.name, "path": str(p), "folder": str(p.parent), "size": size,
+            "modified": datetime.fromtimestamp(mtime).isoformat(timespec="seconds"), "sheets": sheets}
+
+
+def _file_detail(p: Path) -> dict:
+    if not p.is_file():
+        raise ValueError(f"Không thấy file: {p}")
+    st = p.stat()
+    try:
+        role = role_of(p)
+    except Exception:
+        role = None
+    return {**_file_detail_cached(str(p), st.st_mtime, st.st_size), "role": role}
+
+
 def _new_password() -> str:
     """Readable first password, e.g. 'kq7m-x3vt-p9da' (no 0/o/1/l)."""
     abc = "abcdefghijkmnpqrstuvwxyz23456789"
@@ -596,7 +647,8 @@ class Api:
                 unknown.append(f.name)
             elif role not in found:
                 found[role] = f
-        info = lambda f: {"path": str(f), "name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1)}  # noqa: E731
+        info = lambda f: {"path": str(f), "name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1),  # noqa: E731
+                          "modified": _mtime(f)}
         roles = {r: info(f) for r, f in found.items() if r in ROLES}
         parts = {t: found[t] for t in TRACKER_SHEETS if t in found}
         tracker_missing = []
@@ -605,11 +657,18 @@ class Api:
             if not tracker_missing:
                 roles["tracker"] = {"path": str(parts["raw"]), "paths": [str(f) for f in parts.values()],
                                     "name": " + ".join(f.name for f in parts.values()),
-                                    "size_mb": round(sum(f.stat().st_size for f in parts.values()) / 1e6, 1)}
+                                    "size_mb": round(sum(f.stat().st_size for f in parts.values()) / 1e6, 1),
+                                    "modified": max(_mtime(f) for f in parts.values())}
         elif parts and "tracker" in roles:  # CSV tables override the workbook's sheets
             roles["tracker"]["paths"] = [roles["tracker"]["path"], *[str(f) for f in parts.values()]]
         return {"roles": roles, "missing": [r for r in ROLES if r not in roles], "unknown": unknown,
                 "tracker_missing": tracker_missing}
+
+    @safe
+    def file_detail(self, paths: list[str]) -> dict:
+        """What is inside an input file: size, last modified, and per sheet the rows, columns, date range and
+        the first rows. Cached per (path, modified time, size)."""
+        return {"files": [_file_detail(Path(p)) for p in paths]}
 
     @safe
     def cancel_run(self) -> dict:
