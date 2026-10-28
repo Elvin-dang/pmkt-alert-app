@@ -38,7 +38,10 @@ class FakeSupabase:
     def __call__(self, req, timeout=None):
         url = urllib.parse.urlparse(req.full_url)
         body = json.loads(req.data) if req.data and req.get_header("Content-type") == "application/json" else req.data
-        token = req.get_header("Authorization", "").removeprefix("Bearer ")
+        assert req.get_header("Apikey") == "ANON"
+        auth = req.get_header("Authorization", "")
+        assert auth.startswith("Bearer AT") or not auth  # only a user's session token, never the API key
+        token = auth.removeprefix("Bearer ")
         who = self.tokens.get(token)
         status, out = self.route(req.get_method(), url.path, urllib.parse.parse_qs(url.query), body, who, req)
         if status >= 400:

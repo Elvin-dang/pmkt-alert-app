@@ -116,7 +116,9 @@ class Supabase:
         self.token: str | None = None
 
     def _call(self, method: str, path: str, body=None, json_body=None, headers=None) -> bytes:
-        h = {"apikey": self.anon, "Authorization": f"Bearer {self.token or self.anon}", **(headers or {})}
+        h = {"apikey": self.anon, **(headers or {})}  # works with legacy anon (JWT) and sb_publishable_ keys
+        if self.token:
+            h["Authorization"] = f"Bearer {self.token}"
         data = body
         if json_body is not None:
             data, h["Content-Type"] = json.dumps(json_body).encode(), "application/json"
