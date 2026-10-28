@@ -54,7 +54,7 @@ def main() -> None:
     from pmkt_alert.updater import cleanup_downloads
     store = Store(default_base())
     cleanup_downloads(store.base / "updates")
-    api = Api(store)
+    api = Api(store, require_login=True)
     api._startup_file = next((a for a in sys.argv[1:] if a.lower().endswith(".pmkt")), None)
     try:
         register_file_type()

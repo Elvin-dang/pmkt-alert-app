@@ -751,5 +751,19 @@ window.I18N_EN = {
 "Email này đã có tài khoản": "This email already has an account",
 "Không tìm thấy tài khoản": "Account not found",
 "Không thể khoá hoặc xoá chính tài khoản đang dùng": "You can't lock or delete the account you're using",
-"Phiên đăng nhập không hợp lệ": "Invalid session"
+"Phiên đăng nhập không hợp lệ": "Invalid session",
+"Tiến độ GMV & spend so với time gone": "GMV & spend progress vs time gone",
+"% target tháng đã đạt. Vạch đứt = time gone": "% of monthly target reached. Dashed line = time gone",
+": GMV dưới vạch là chậm, spend vượt vạch là tiêu nhanh.": ": GMV left of the line is behind, spend right of it is running fast.",
+"Mức cảnh báo theo PIC": "Alert levels by PIC",
+"Theo dõi": "Follow-up",
+"PL + campaign. “Theo dõi” = campaign đã action, đang chờ kiểm tra kết quả.": "PLs + campaigns. “Follow-up” = actioned campaigns waiting for the result check.",
+"Bản đồ PL: GMV pace vs spend pace": "PL map: GMV pace vs spend pace",
+"Mỗi chấm là một PL (màu = PIC). Vạch đứt = đúng tiến độ (1×). Góc trên-trái: spend nhanh nhưng GMV chậm – cần xem trước. Góc dưới-phải: GMV tốt, spend còn room.": "Each dot is a PL (colour = PIC). Dashed lines = on pace (1×). Top-left: spending fast but GMV behind – look first. Bottom-right: GMV on track, spend has room.",
+"Top 10 PL theo excess spend": "Top 10 PLs by excess spend",
+"Excess = spend L7D vượt mức hợp lý theo ACoS target, cộng từ các campaign của PL.": "Excess = L7D spend above what the ACoS target allows, summed over the PL's campaigns.",
+"Không có excess spend.": "No excess spend.",
+"Tỷ trọng GMV theo tuần": "Weekly GMV share",
+"Cần từ 2 PIC trở lên.": "Needs 2 or more PICs.",
+"Đăng nhập trước khi dùng app": "Sign in before using the app"
 };

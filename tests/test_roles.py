@@ -214,3 +214,14 @@ def test_bundled_server_needs_no_url_entry(tmp_path, monkeypatch):
     api = device(tmp_path, "x", sb)
     assert api.team_info()["bundled"] is True and api.team_info()["url"] == URL
     assert api.team_sign_in(LEAD, LEAD_PASSWORD)["role"] == "lead"  # no connect step: the server is built in
+
+
+def test_app_requires_sign_in_before_use(tmp_path, synthetic_paths):
+    sb = FakeSupabase(LEAD)
+    api = Api(Store(tmp_path / "s"), status_fn=OK, ask_fn=no_claude, sb_opener=sb, require_login=True)
+    assert "Đăng nhập" in api.run([str(p) for p in synthetic_paths])["error"]
+    assert "Đăng nhập" in api.save_style({})["error"]
+    sign_in(api, LEAD, LEAD_PASSWORD)
+    assert "error" not in api.run([str(p) for p in synthetic_paths], use_claude=False)
+    api.team_sign_out()
+    assert "Đăng nhập" in api.run([str(p) for p in synthetic_paths])["error"]

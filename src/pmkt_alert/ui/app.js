@@ -776,13 +776,14 @@ async function init() {
     else api.check_update().then((u) => { if (!u.error) { S.update = u; renderVersion(); } });
   }
   await initTeam();
-  if ((!S.role || S.role.role !== "member") && !S.runId) {
-    const last = await api.results();
-    if (!last.error && last.result) { setRun(last); go("results"); }
-  }
+  if (S.role && S.role.signed_in && S.role.role === "lead" && !S.runId) await loadLastRun();
   const w = await api.whats_new();
   if (!w.error && w.show) showInstalledNotes(w);
-  if (!S.role || S.role.role !== "member") { loadLessons(); loadReview(); }
+  if (S.role && S.role.signed_in && S.role.role === "lead") { loadLessons(); loadReview(); }
+}
+async function loadLastRun() {
+  const last = await api.results();
+  if (!last.error && last.result) { setRun(last); go("results"); }
 }
 
 if (window.pywebview && window.pywebview.api) init();
@@ -856,6 +857,18 @@ function renderDashboard() {
         <td class="n">${p.values.high_alerts}</td><td class="n">${money(p.values.excess_new)}</td></tr>`).join("")}</tbody></table></div>
       <p class="muted" style="font-size:12px">${sc.metrics.map((m) => `<b>${esc(m.short)}</b>: ${esc(m.label)} (${m.higher_better ? "cao tốt" : "thấp tốt"})`).join(" · ")}<br>Thanh nhỏ = điểm của chỉ số (dài = tốt hơn so với các PIC khác). “${NO_PIC}” không được xếp hạng.</p></div>
     <div class="grid g2" style="margin-top:12px">
+      <div class="card"><h2>Tiến độ GMV & spend so với time gone</h2><div class="chartbox"><canvas id="ch-pace" role="img" aria-label="Tiến độ GMV và spend theo PIC"></canvas></div>
+        <p class="muted" style="font-size:12px;margin:4px 0 0">% target tháng đã đạt. Vạch đứt = time gone (${pct(sc.time_gone)}): GMV dưới vạch là chậm, spend vượt vạch là tiêu nhanh.</p></div>
+      <div class="card"><h2>Mức cảnh báo theo PIC</h2><div class="chartbox"><canvas id="ch-sev" role="img" aria-label="Số cảnh báo HIGH, MED và cần theo dõi theo PIC"></canvas></div>
+        <p class="muted" style="font-size:12px;margin:4px 0 0">PL + campaign. “Theo dõi” = campaign đã action, đang chờ kiểm tra kết quả.</p></div>
+    </div>
+    <div class="grid g2" style="margin-top:12px">
+      <div class="card"><h2>Bản đồ PL: GMV pace vs spend pace</h2><div class="chartbox tall"><canvas id="ch-plmap" role="img" aria-label="Mỗi chấm là một PL"></canvas></div>
+        <p class="muted" style="font-size:12px;margin:4px 0 0">Mỗi chấm là một PL (màu = PIC). Vạch đứt = đúng tiến độ (1×). Góc trên-trái: spend nhanh nhưng GMV chậm – cần xem trước. Góc dưới-phải: GMV tốt, spend còn room.</p></div>
+      <div class="card"><h2>Top 10 PL theo excess spend</h2><div class="chartbox tall"><canvas id="ch-excess" role="img" aria-label="Top PL theo excess spend"></canvas></div>
+        <p class="muted" style="font-size:12px;margin:4px 0 0">Excess = spend L7D vượt mức hợp lý theo ACoS target, cộng từ các campaign của PL.</p></div>
+    </div>
+    <div class="grid g2" style="margin-top:12px">
       <div class="card"><div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0">So sánh theo chỉ số</h2><span style="flex:1"></span><select id="db-metric" style="width:auto">${metricOpts}</select></div>
         <div class="chartbox" style="margin-top:8px"><canvas id="ch-metric" role="img" aria-label="So sánh chỉ số giữa các PIC"></canvas></div></div>
       <div class="card"><div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0">Xu hướng theo tuần</h2><span style="flex:1"></span>
@@ -863,7 +876,10 @@ function renderDashboard() {
         <div class="chartbox" style="margin-top:8px"><canvas id="ch-week" role="img" aria-label="Xu hướng theo tuần"></canvas></div>
         <p class="muted" style="font-size:12px;margin:4px 0 0">Tuần tính từ thứ Hai; tuần cuối có thể chưa đủ 7 ngày.</p></div>
     </div>
-    <div class="card" style="margin-top:12px"><h2>Số alert HIGH qua các lần chạy</h2>${d.runs.length >= 2 ? '<div class="chartbox"><canvas id="ch-runs" role="img" aria-label="Alert HIGH qua các lần chạy"></canvas></div>' : '<div class="empty">Cần ít nhất 2 lần chạy để xem xu hướng.</div>'}</div>`;
+    <div class="grid g2" style="margin-top:12px">
+      <div class="card"><h2>Tỷ trọng GMV theo tuần</h2>${pics.filter((p) => p !== NO_PIC).length >= 2 ? '<div class="chartbox"><canvas id="ch-share" role="img" aria-label="Tỷ trọng GMV của từng PIC theo tuần"></canvas></div>' : '<div class="empty">Cần từ 2 PIC trở lên.</div>'}</div>
+      <div class="card"><h2>Số alert HIGH qua các lần chạy</h2>${d.runs.length >= 2 ? '<div class="chartbox"><canvas id="ch-runs" role="img" aria-label="Alert HIGH qua các lần chạy"></canvas></div>' : '<div class="empty">Cần ít nhất 2 lần chạy để xem xu hướng.</div>'}</div>
+    </div>`;
   drawCharts();
 }
 function metricLabel(key) { return ((S.db?.scorecard.metrics || []).find((m) => m.key === key) || { label: key }).label; }
@@ -884,10 +900,71 @@ function drawCharts() {
   drawChart("ch-week", { type: "line", data: { labels: weeks.map(ddmm), datasets: pics.map((pic) => ({ label: pic, borderColor: picColor(pic, pics), backgroundColor: picColor(pic, pics), borderWidth: 2, pointRadius: 4, tension: 0,
       data: weeks.map((w) => { const r = d.weekly.find((x) => x.pic === pic && x.week === w); return r ? r[key] : null; }) })) },
     options: { plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${isRatio ? pct(c.raw, 1) : money(c.raw)}` } } }, scales: { y: { ticks: { callback: (v) => (isRatio ? pct(v) : "$" + Number(v).toLocaleString("en-US")) } } } } });
+  drawExtraCharts(d, sc, pics);
   if (d.runs.length >= 2) {
     drawChart("ch-runs", { type: "line", data: { labels: d.runs.map((r) => `${ddmm(r.as_of)} (${r.run_id.slice(9, 13)})`),
       datasets: pics.map((pic) => ({ label: pic, borderColor: picColor(pic, pics), backgroundColor: picColor(pic, pics), borderWidth: 2, pointRadius: 4, data: d.runs.map((r) => r.by_pic[pic]?.high ?? null) })) },
       options: { scales: { y: { beginAtZero: true, ticks: { precision: 0 } } } } });
+  }
+}
+// Dashed reference lines (time gone, on-pace 1×) drawn under the data.
+function refLines(lines) {
+  return { id: "ref", beforeDatasetsDraw(chart) {
+    const { ctx, chartArea: a, scales } = chart;
+    ctx.save(); ctx.setLineDash([5, 4]); ctx.lineWidth = 1.5; ctx.strokeStyle = cssVar("--muted");
+    for (const [axis, v] of lines) {
+      const sc = scales[axis]; if (!sc || v == null) continue;
+      const px = sc.getPixelForValue(v);
+      ctx.beginPath();
+      if (axis === "x") { ctx.moveTo(px, a.top); ctx.lineTo(px, a.bottom); } else { ctx.moveTo(a.left, px); ctx.lineTo(a.right, px); }
+      ctx.stroke();
+    }
+    ctx.restore();
+  } };
+}
+function drawExtraCharts(d, sc, pics) {
+  const pal = SERIES[isDark() ? "dark" : "light"], surface = cssVar("--card") || (isDark() ? "#111A2C" : "#fff");
+  const named = sc.pics.filter((p) => p.pic !== NO_PIC && (p.values.gmv_pct != null || p.values.spend_pct != null));
+  drawChart("ch-pace", { type: "bar", plugins: [refLines([["x", sc.time_gone]])],
+    data: { labels: named.map((p) => p.pic), datasets: [
+      { label: "GMV % target", data: named.map((p) => p.values.gmv_pct), backgroundColor: pal[0], borderRadius: 4, barThickness: 12 },
+      { label: "Spend % target", data: named.map((p) => p.values.spend_pct), backgroundColor: pal[1], borderRadius: 4, barThickness: 12 }] },
+    options: { indexAxis: "y", plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${pct(c.raw, 1)} (time gone ${pct(sc.time_gone)})` } } },
+      scales: { x: { beginAtZero: true, suggestedMax: sc.time_gone * 1.2, ticks: { callback: (v) => pct(v) } }, y: { grid: { display: false } } } } });
+
+  const dg = (S.run?.digest || []).filter((x) => x.pic !== NO_PIC);
+  const sevSet = [["HIGH", (x) => x.pl_high + x.camp_high, "--high"], ["MED", (x) => x.pl_med + x.camp_med, "--med"], [I18N.t("Theo dõi"), (x) => x.camp_followup, "--info"]];
+  drawChart("ch-sev", { type: "bar",
+    data: { labels: dg.map((x) => x.pic), datasets: sevSet.map(([label, f, v]) => ({ label, data: dg.map(f), backgroundColor: cssVar(v), borderColor: surface, borderWidth: 1, barThickness: 16 })) },
+    options: { indexAxis: "y", scales: { x: { stacked: true, beginAtZero: true, ticks: { precision: 0 } }, y: { stacked: true, grid: { display: false } } } } });
+
+  const pls = (S.run?.pl || []).filter((r) => num(r.gmv_pace) && num(r.spend_pace));
+  const cap = (v) => Math.min(v, 3);  // ponytail: extreme paces pinned at 3× so the cloud stays readable; tooltip shows the real value
+  const plPics = [...new Set(pls.map((r) => r.pic))];
+  drawChart("ch-plmap", { type: "scatter", plugins: [refLines([["x", 1], ["y", 1]])],
+    data: { datasets: plPics.map((pic) => ({ label: pic, backgroundColor: picColor(pic, pics), borderColor: surface, borderWidth: 2, pointRadius: 5, pointHoverRadius: 7,
+      data: pls.filter((r) => r.pic === pic).map((r) => ({ x: cap(r.gmv_pace), y: cap(r.spend_pace), r })) })) },
+    options: { interaction: { mode: "nearest", intersect: true },
+      plugins: { tooltip: { callbacks: { label: (c) => { const r = c.raw.r; return `${r.pl} (${r.pic}) · GMV ${Number(r.gmv_pace).toFixed(2)}× · spend ${Number(r.spend_pace).toFixed(2)}× · ${short(r.pacing_action)}`; } } } },
+      scales: { x: { min: 0, suggestedMax: 1.5, title: { display: true, text: "GMV pace (× time gone)" } }, y: { min: 0, suggestedMax: 1.5, title: { display: true, text: "Spend pace (× time gone)" } } } } });
+
+  const ex = {};
+  (S.run?.camp || []).forEach((c) => { if (c.excess > 0) { const k = c.pl; ex[k] = ex[k] || { pl: c.pl, pic: c.pic, v: 0 }; ex[k].v += c.excess; } });
+  const top = Object.values(ex).sort((a, b) => b.v - a.v).slice(0, 10);
+  drawChart("ch-excess", { type: "bar",
+    data: { labels: top.map((x) => x.pl), datasets: [{ data: top.map((x) => x.v), backgroundColor: top.map((x) => picColor(x.pic, pics)), borderRadius: 4, barThickness: 14 }] },
+    options: { indexAxis: "y", plugins: { legend: { display: false }, tooltip: { callbacks: { label: (c) => `${top[c.dataIndex].pic}: ${money(c.raw)}` } } },
+      scales: { x: { beginAtZero: true, ticks: { callback: (v) => "$" + Number(v).toLocaleString("en-US") } }, y: { grid: { display: false } } } } });
+  if (!top.length) { const el = document.getElementById("ch-excess"); if (el) el.parentElement.innerHTML = '<div class="empty">Không có excess spend.</div>'; }
+
+  if (document.getElementById("ch-share")) {
+    const weeks = [...new Set(d.weekly.map((r) => r.week))].sort();
+    const tot = Object.fromEntries(weeks.map((w) => [w, d.weekly.filter((r) => r.week === w).reduce((a, r) => a + (r.gmv || 0), 0)]));
+    drawChart("ch-share", { type: "bar",
+      data: { labels: weeks.map(ddmm), datasets: [...pics.filter((p) => p !== NO_PIC), ...(d.weekly.some((r) => r.pic === NO_PIC) ? [NO_PIC] : [])].map((pic) => ({ label: pic, backgroundColor: picColor(pic, pics), borderColor: surface, borderWidth: 1,
+        data: weeks.map((w) => { const r = d.weekly.find((x) => x.pic === pic && x.week === w); return r && tot[w] ? r.gmv / tot[w] : 0; }) })) },
+      options: { plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${pct(c.raw, 1)}` } } },
+        scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, min: 0, max: 1, ticks: { callback: (v) => pct(v) } } } } });
   }
 }
 async function teamReview() {
@@ -933,6 +1010,7 @@ async function loadRole() {
   if (bad(r)) return null;
   S.role = r;
   document.body.classList.toggle("member", r.role === "member");
+  document.body.classList.toggle("locked", !r.signed_in);
   $("#role-badge").textContent = !r.signed_in ? NOT_SIGNED : r.role === "lead" ? `Lead · ${r.email}` : `${r.pic || "—"} · chỉ xem`;
   renderTeam();
   return r;
@@ -1011,6 +1089,7 @@ async function signIn() {
   await loadRole();
   toast(r.role === "lead" ? "Đã đăng nhập – Lead." : `Đã đăng nhập – xem PIC ${r.pic}.`);
   if (r.role === "member") loadReports(true);
+  else { loadLastRun(); loadLessons(); loadReview(); }
   if (r.needs_key) { go("settings"); loadSettings(); }
 }
 async function loadReports(openNewest) {
@@ -1044,7 +1123,6 @@ function wireTeam() {
   $("#role-badge").onclick = () => { if (!(S.role || {}).signed_in) openSetup(); else { go("settings"); loadSettings(); } };
   $("#su-signin").onclick = signIn;
   $("#su-pw").addEventListener("keydown", (e) => { if (e.key === "Enter") signIn(); });
-  $("#su-skip").onclick = () => { store("setupSkip", "1"); closeSetup(); };
   $("#upload-btn").onclick = uploadReport;
   $("#reload-pmkt").onclick = () => loadReports(false);
   $("#report-list").onchange = (e) => openReport(e.target.value);
@@ -1109,7 +1187,7 @@ async function initTeam() {
   wireTeam();
   const r = await loadRole();
   if (!r) return;
-  if (!r.signed_in && !store("setupSkip")) openSetup();
+  if (!r.signed_in) { openSetup(); return; }  // nothing works before sign-in
   const s = await api.startup_open();
   if (!s.error && s.opened) { const res = await api.results(); if (!res.error) setRun(res); await loadRole(); go("results"); }
   if (r.signed_in && r.role === "member") loadReports(!(s && s.opened));

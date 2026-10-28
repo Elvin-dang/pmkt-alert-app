@@ -75,16 +75,19 @@ def always_fail(prompt, schema):
     raise ClaudeError("Claude Code chưa sẵn sàng")
 
 
+SIGN_IN_FIRST = "Đăng nhập trước khi dùng app"
 LEAD_ONLY = "Chỉ Lead được làm việc này – bạn đang ở chế độ Thành viên (chỉ xem)"
 MEMBER_SETTINGS = {"language", "ui_lang", "auto_update_check", "last_seen_version"}
 
 
 def lead_only(fn):
-    """Refused in Member mode (enforced here, not only hidden in the UI)."""
+    """Refused in Member mode, and before sign-in in the app (enforced here, not only hidden in the UI)."""
     @functools.wraps(fn)
     def wrapper(self, *a, **k):
         if self._role() == "member":
             raise PermissionError(LEAD_ONLY)
+        if self._require_login and not (self._role() == "lead" and self._secrets().get("session")):
+            raise PermissionError(SIGN_IN_FIRST)
         return fn(self, *a, **k)
     return wrapper
 
@@ -104,7 +107,7 @@ def safe(fn):
 
 class Api:
     def __init__(self, store: Store, ask_fn=ask, status_fn=check_status, release_fn=latest_release,
-                 recent_fn=recent_releases, sb_opener=urllib.request.urlopen):
+                 recent_fn=recent_releases, sb_opener=urllib.request.urlopen, require_login: bool = False):
         self._store, self._status = store, status_fn
         self._ask = self._with_note(ask_fn)
         self._release, self._recent = release_fn, recent_fn
@@ -115,6 +118,7 @@ class Api:
         self._paths: list[str] = []
         self._eta: Eta | None = None  # time-left estimate of the run in progress
         self._member: dict | None = None  # Member mode: the opened .pmkt (run, inputs, logic path, file)
+        self._require_login = require_login  # the app: nothing works before sign-in (tests: off)
         self._sb_opener, self._sb_cache = sb_opener, None  # Supabase HTTP opener (tests: a fake), signed-in client
         self._startup_file: str | None = None  # a .pmkt double-clicked to start the app
 

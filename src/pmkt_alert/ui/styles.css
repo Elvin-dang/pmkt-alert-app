@@ -199,3 +199,4 @@ body:not(.member) .member-only{display:none!important}
 .member [data-lead],.member .fb:not(.evb),.member .slack-edit,.member #rewrite{display:none!important}
 .member main{-webkit-user-select:none;user-select:none}
 .code-box{font-family:"Fira Code",monospace;font-size:13px;word-break:break-all;background:var(--muted-bg);border:1px solid var(--border);border-radius:6px;padding:8px 10px}
+.locked main,.locked nav,.locked footer{visibility:hidden}
