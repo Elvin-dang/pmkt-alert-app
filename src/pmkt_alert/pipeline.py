@@ -1,7 +1,7 @@
 """Runs tiers 0–4 on loaded inputs."""
 import math
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
@@ -11,6 +11,7 @@ from .rules.actions import action_status, parse_activity
 from .rules.campaign import campaign
 from .rules.dataq import Issue, data_check
 from .rules.digest import digest
+from .rules.inventory import guard_camp, guard_pl, pl_inventory, sku_cover
 from .rules.pacing import pacing
 from .rules.score_v3 import department, score_rows
 from .rules.trend import trend
@@ -63,13 +64,23 @@ def _score_model(inputs, logic: Logic, win: Windows, actions: pd.DataFrame):
     pics = trend(sums, p, logic.matrix)
     dept = department(pl, pics, p)
     pl = score_rows(pl, dept, win.time_gone, p)
+    # tier 2B: inventory guard – only with fresh stock data (Inventory AMZ)
+    cover, inv = sku_cover(inputs.inventory, inputs.raw, sorted(set(scoped["asin"])), win.as_of, p)
+    guard = len(inputs.inventory) > 0 and not inv["stale"]
+    pl = guard_pl(pl_inventory(pl, cover, inputs.raw, scoped, win.as_of, p)) if guard else pl.assign(inv_level=None)
     pl.insert(0, "unit_id", [f"pl:{x}" for x in pl["pl"]])
     pics = score_rows(pics, dept, win.time_gone, p)
     pics.insert(0, "unit_id", [f"pic:{x}" for x in pics["pic"]])
-    camp = action_status(campaign(camp_frame(inputs.ads, scoped, win), pl, p, logic.k_by_type), actions, win.as_of, p)
+    camp = campaign(camp_frame(inputs.ads, scoped, win), pl, p, logic.k_by_type)
+    camp = guard_camp(camp, cover, inputs.ads, win.as_of, p) if guard else camp.assign(inv_note="")
+    camp = action_status(camp, actions, win.as_of, p)
+    l7d = (win.as_of - timedelta(days=6), win.as_of)
+    selling = set(_between(inputs.raw, l7d).query("gmv > 0")["asin"]) | set(_between(inputs.ads, l7d).query("spend > 0")["asin"])
     # data checks map against ALL teams: other teams' ASINs are out of scope, not unmapped
     return pl, camp, pics, dept, amap, {"out_of_scope": len(amap) - len(scoped), "scope_label": label,
-                                        "in_scope": len(scoped)}
+                                        "in_scope": len(scoped), "inv_none": len(inputs.inventory) == 0,
+                                        "inv_stale": inv["latest"] if len(inputs.inventory) and inv["stale"] else None,
+                                        "inv_missing": [a for a in inv["missing"] if a in selling]}
 
 
 def run_rules(inputs, logic: Logic, as_of: date | None = None) -> RunResult:

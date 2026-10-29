@@ -16,8 +16,18 @@ class Issue:
 def data_check(*, unmapped_rows: int, unmapped_spend: float, ads_spend_mtd: float, raw_spend_mtd: float,
                unmatched_camps: pd.DataFrame, duplicates: int, no_pic_pls: list[str], log_skipped: int,
                log_empty: bool, no_targets: bool = False, out_of_scope: int = 0, scope_label: str = "",
-               in_scope: int | None = None) -> list[Issue]:
+               in_scope: int | None = None, inv_none: bool = False, inv_stale=None, inv_missing: list | None = None) -> list[Issue]:
     out = []
+    if inv_none:
+        out.append(Issue("INV_NONE", "INFO", "Không có số liệu tồn kho (sheet Inventory AMZ)",
+                         "Chưa áp chốt chặn tồn kho – PIC tự kiểm tra hàng trước khi tăng chi.", None))
+    if inv_stale is not None:
+        out.append(Issue("INV_STALE", "WARN", f"Số liệu tồn kho quá cũ (mới nhất {inv_stale:%d/%m/%Y})",
+                         "Chưa áp chốt chặn tồn kho. Cập nhật sheet Inventory AMZ trong file Data rồi chạy lại.", None))
+    if inv_missing:
+        out.append(Issue("INV_MISSING", "WARN", f"{len(inv_missing)} ASIN đang bán chưa có số liệu tồn kho",
+                         "Chưa áp chốt chặn cho các ASIN này: " + ", ".join(inv_missing[:10])
+                         + (" …" if len(inv_missing) > 10 else ""), None))
     if in_scope == 0:
         out.append(Issue("NO_SCOPE", "WARN", f"Không có ASIN nào thuộc team '{scope_label}'",
                          "Kiểm tra 'Nhãn team được tracking' trong file logic và cột Team Label trong Product Info.", None))
