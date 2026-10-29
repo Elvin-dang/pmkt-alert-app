@@ -42,6 +42,16 @@ V3_LABELS: dict[str, tuple[str, str]] = {
     "sd_room": ("D", "Nới ngưỡng SCALE DOWN"), "sd_over": ("D", "Siết ngưỡng SCALE DOWN"),
     "min_time_gone": ("E", "Time gone tối thiểu"), "min_spend": ("E", "Spend MTD tối thiểu"),
 }
+# Inventory guard (Config K, logic v4) – optional: files without it use the defaults, silently.
+INV_LABELS: dict[str, tuple[str, str]] = {
+    "inv_low_days": ("K", 'Ngưỡng "sắp hết hàng"'), "inv_high_days": ("K", 'Ngưỡng "dư hàng"'),
+    "inv_incoming_days": ("K", "Cộng hàng đang về trong"), "inv_sales_days": ("K", "Lượng bán trung bình tính trên"),
+    "inv_attention": ("K", 'Nhóm "Cần chú ý"'), "inv_critical": ("K", 'Nhóm "Nghiêm trọng"'),
+    "inv_excess": ("K", 'Nhóm "Dư hàng"'), "inv_camp_block": ("K", "Campaign bị chặn khi"),
+    "inv_stale_days": ("K", "Số liệu tồn kho bị coi là quá cũ"),
+}
+DEFAULT_INV = {"inv_low_days": 14.0, "inv_high_days": 90.0, "inv_incoming_days": 7.0, "inv_sales_days": 7.0,
+               "inv_attention": 0.2, "inv_critical": 0.5, "inv_excess": 0.5, "inv_camp_block": 0.5, "inv_stale_days": 2.0}
 TEXT_LABELS = {"team_label": "Nhãn team được tracking"}
 # Readable names where the file's label prefix is too short to understand on its own.
 DISPLAY = {"w1": "Trọng số w1 – TACoS vs target riêng", "w2": "Trọng số w2 – TACoS vs target Department",
@@ -52,7 +62,7 @@ DISPLAY = {"w1": "Trọng số w1 – TACoS vs target riêng", "w2": "Trọng s�
            "score_sd": "SCALE DOWN nếu điểm ≥", "score_opt": "OPTIMIZE nếu điểm ≥", "score_up": "SCALE UP nếu điểm ≤",
            "sd_room": "Nới ngưỡng SCALE DOWN khi CÒN ROOM", "sd_over": "Siết ngưỡng SCALE DOWN khi VƯỢT",
            "min_time_gone": "Time gone tối thiểu để chấm điểm", "min_spend": "Spend MTD tối thiểu để chấm điểm ($)"}
-ALL_LABELS = {**PARAM_LABELS, **V3_LABELS}
+ALL_LABELS = {**PARAM_LABELS, **V3_LABELS, **INV_LABELS}
 V1_ONLY = ("gmv_pace_low", "spend_pace_low", "spend_pace_high", "tacos_over")
 DEFAULT_V3 = {"w1": 3.0, "w2": 3.0, "w3": 2.0, "w4": 2.0, "w5": 2.0, "w6": 2.0, "sens_tacos": 0.5, "sens_ads": 0.5,
               "sens_trend": 0.5, "sens_gmv": 0.3, "sens_spend": 0.5, "score_sd": 50.0, "score_opt": 25.0,
@@ -83,7 +93,9 @@ RANGES = {"trend_spend": (0.01, 2), "trend_acos": (0.01, 2), "trend_tacos": (0.0
           "spend_pace_low": (0.1, 2), "spend_pace_high": (0.5, 5), "tacos_over": (0.5, 5),
           **{f"w{i}": (0, 100) for i in range(1, 7)},
           **{k: (0.01, 10) for k in ("sens_tacos", "sens_ads", "sens_trend", "sens_gmv", "sens_spend")},
-          "min_time_gone": (0, 1)}
+          "min_time_gone": (0, 1), "inv_low_days": (1, 365), "inv_high_days": (1, 3650), "inv_incoming_days": (0, 90),
+          "inv_sales_days": (1, 90), **{k: (0, 1) for k in ("inv_attention", "inv_critical", "inv_excess", "inv_camp_block")},
+          "inv_stale_days": (0, 60)}
 _INFO_ROWS = ("config", "as-of", "đầu tháng", "số ngày", "time gone", "l7d", "p7d")
 
 
@@ -239,6 +251,8 @@ def load_logic(path: Path, fallback: "Logic | None" = None) -> Logic:
         if model == "rules_v1":
             for key in V3_LABELS:
                 params.pop(key, None)
+        for key, value in DEFAULT_INV.items():
+            params.setdefault(key, fb_params.get(key, value))
         for key in DEFAULT_K:
             if key not in k_by_type:
                 k_by_type[key] = fb_k.get(key, DEFAULT_K[key])
@@ -256,21 +270,22 @@ def load_logic(path: Path, fallback: "Logic | None" = None) -> Logic:
                                  params["spend_pace_low"], params["spend_pace_low"], None)
                           | {"detail": f"phải < Spend pace quá cao ({params['spend_pace_high']})"})
 
-        if "Matrix_PL" not in wb.sheetnames:
+        msheet = next((n for n in ("Matrix_PL", "Matrix_Product Line") if n in wb.sheetnames), None)
+        if msheet is None:
             matrix = fb_matrix
             issues.append(_issue("NO_MATRIX", None, "Matrix_PL", None, None, None, fb_name))
         else:
-            for n, row in enumerate(wb["Matrix_PL"].iter_rows(min_row=5, values_only=True), 5):
+            for n, row in enumerate(wb[msheet].iter_rows(min_row=5, values_only=True), 5):
                 if not (row and isinstance(row[0], str) and re.fullmatch(r"[UFD]\|[UFD]\|[UFD]", row[0].strip())):
                     continue
                 k = row[0].strip()
                 label = str(row[5] or "").strip() if len(row) > 5 else ""
                 hint = str(row[6] or "") if len(row) > 6 else ""
-                cells[f"matrix:{k}"] = f"Matrix_PL!F{n}"
+                cells[f"matrix:{k}"] = f"{msheet}!F{n}"
                 if label and label.upper() not in VALID_LABELS:
                     used = fb_matrix.get(k, ("", ""))[0]
                     guess = difflib.get_close_matches(label.upper(), VALID_LABELS, n=1)
-                    issues.append(_issue("MATRIX_LABEL", f"matrix:{k}", f"Matrix_PL {k}", f"Matrix_PL!F{n}", label, used, fb_name)
+                    issues.append(_issue("MATRIX_LABEL", f"matrix:{k}", f"Matrix_PL {k}", f"{msheet}!F{n}", label, used, fb_name)
                                   | {"suggest": guess[0] if guess else None})
                     label = used
                 matrix[k] = (label.upper(), hint)
@@ -278,8 +293,9 @@ def load_logic(path: Path, fallback: "Logic | None" = None) -> Logic:
                 if k not in matrix:
                     matrix[k] = fb_matrix.get(k, DEFAULT_MATRIX[k])
                     issues.append(_issue("MATRIX_KEY", f"matrix:{k}", f"Matrix_PL {k}", None, None, matrix[k][0], fb_name))
-        if "Logic_Tiers" in wb.sheetnames:
-            for row in wb["Logic_Tiers"].iter_rows(values_only=True):
+        tsheet = next((n for n in ("Logic_Tiers", "Logic Tier") if n in wb.sheetnames), None)
+        if tsheet:
+            for row in wb[tsheet].iter_rows(values_only=True):
                 parts = [str(v) for v in row if v not in (None, "")]
                 if parts:
                     tiers.append(" | ".join(parts))

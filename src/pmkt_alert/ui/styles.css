@@ -241,3 +241,6 @@ body:not(.member) .member-only{display:none!important}
 @media (max-width:760px){.login-wrap{grid-template-columns:1fr}.login-brand{padding:24px}.login-points{display:none}.login-form{padding:28px 24px}}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .login-brand{background:linear-gradient(160deg,#1E3A8A 0%,#172554 100%)}}
 :root[data-theme="dark"] .login-brand{background:linear-gradient(160deg,#1E3A8A 0%,#172554 100%)}
+.slot .badges{display:flex;gap:6px;margin-left:auto;flex:none}
+.run-error{border:1px solid var(--high);background:var(--high-soft);border-radius:10px;padding:12px 14px;font-size:13px}
+.run-error .kv{grid-template-columns:110px 1fr}

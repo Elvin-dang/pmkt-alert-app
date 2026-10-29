@@ -10,7 +10,7 @@ from pmkt_alert.loaders import ROLES, InputError, detect_inputs, load_inputs
 def test_detect_by_content_not_name(tmp_path):
     make_all(tmp_path, names={"ads": "whatever.xlsx"})
     roles = detect_inputs([tmp_path])
-    assert roles["ads"].name == "whatever.xlsx" and set(roles) == set(ROLES)
+    assert roles["ads"].name == "whatever.xlsx" and set(roles) == set(ROLES) | {"defind"}  # an older set: optional Defind is kept
 
 
 def test_missing_role_message(tmp_path):

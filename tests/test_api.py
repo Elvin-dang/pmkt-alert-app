@@ -55,8 +55,8 @@ def test_bad_input_returns_error_not_raise(tmp_path):
 
 def test_detect(tmp_path, synthetic_paths):
     out = Api(Store(tmp_path / "s"), status_fn=OK).detect(paths(synthetic_paths))
-    assert set(out["roles"]) == {"tracker", "ads", "activity", "logic", "defind"}
-    assert out["roles"]["logic"]["name"] == "Alert_Logic_Ver 1.xlsx"
+    assert set(out["roles"]) == {"tracker", "ads", "activity", "logic", "defind"}  # an older set: Defind still shown
+    assert out["roles"]["logic"]["name"] == "Alert_Logic_Ver 1.xlsx" and out["missing"] == []
 
 
 def test_feedback_roundtrip(tmp_path, synthetic_paths):
@@ -495,3 +495,31 @@ def test_input_files_have_modified_time_and_detail(tmp_path, synthetic_paths):
     vn.write_text("Ngày,spend\n02/10/2026,1\n25/10/2026,2\n", encoding="utf-8")
     assert api.file_detail([str(vn)])["files"][0]["sheets"][0]["dates"] == {"column": "Ngày", "min": "2026-10-02", "max": "2026-10-25"}
     assert "error" in api.file_detail([str(tmp_path / "nope.xlsx")])
+
+
+def test_v4_set_and_new_badges(tmp_path):
+    import os
+    import time
+    from factory import make_all_v4
+    files = make_all_v4(tmp_path / "in")
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    out = api.detect([str(p) for p in files.values()])
+    assert set(out["roles"]) == {"tracker", "ads", "activity", "logic"} and out["missing"] == []
+    assert out["roles"]["ads"]["path"] == out["roles"]["tracker"]["path"] and out["roles"]["ads"]["same_as"] == "tracker"
+    assert all(r["new"] for r in out["roles"].values())
+    assert "error" not in api.run([str(p) for p in files.values()], use_claude=False)
+    out = api.detect([str(p) for p in files.values()])
+    assert not any(r["new"] for r in out["roles"].values())  # a finished run clears "Mới"
+    later = time.time() + 60
+    os.utime(files["activity"], (later, later))
+    out = api.detect([str(p) for p in files.values()])
+    assert out["roles"]["activity"]["new"] and not out["roles"]["logic"]["new"]
+
+
+def test_run_error_names_step_and_location(tmp_path):
+    from factory import make_all_v4, make_data_workbook
+    files = make_all_v4(tmp_path / "in")
+    make_data_workbook(files["data"], drop_column=("KPI", "Spend_final"))
+    out = Api(Store(tmp_path / "s"), status_fn=OK).run([str(p) for p in files.values()], use_claude=False)
+    assert out["step"] == "load" and "Spend_final" in out["error"]
+    assert out["location"] == {"file": files["data"].name, "sheet": "KPI", "columns": ["Spend_final"], "row": 1}

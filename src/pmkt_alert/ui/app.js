@@ -10,7 +10,7 @@ const signed = (v) => (num(v) ? (v >= 0 ? "+" : "−") + Math.abs(v * 100).toFix
 const ddmm = (iso) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}` : "");
 const short = (label) => String(label || "").split(" – ")[0];
 const SEV = { HIGH: 0, MED: 1, LOW: 2, "": 3 };
-const ROLE_NAME = { tracker: "Tracking (raw_sso_us, Product Info, KPI – 1 file .xlsx hoặc 3 file .csv)", ads: "Ads by Campaign (ads_camp)", activity: "Activity Log", logic: "Alert_Logic", defind: "Defind" };
+const ROLE_NAME = { tracker: "Data (raw_sso_us, Product Info, KPI, ads_camp, Inventory AMZ…)", ads: "Ads by Campaign (ads_camp)", activity: "Activity Log", logic: "Logic", defind: "Defind" };
 
 let api = null;
 const S = { paths: [], roles: null, run: null, ai: null, runId: null, pic: null, open: new Set(), update: null, fb: null, origSlack: "" };
@@ -137,7 +137,7 @@ function slot(role) {
     <svg class="i" aria-hidden="true"><use href="#file"/></svg><div style="min-width:0"><div class="name">${esc(r ? r.name : ROLE_NAME[role])}</div>
     <div class="meta">${r ? `${esc(ROLE_NAME[role])} · ${r.size_mb ? r.size_mb : "<0.1"} MB` : "Chưa có file"}</div>
     ${m ? `<div class="meta" style="${stale ? "color:var(--med);font-weight:600" : ""}" title="Lần lưu gần nhất (Last modified)">Sửa lần cuối: ${m.text}${stale ? " – data có thể đã cũ" : ""}</div>` : ""}</div>
-    <span class="st sev ${r ? "OK" : "MED"}">${r ? "HỢP LỆ" : "THIẾU"}</span></div>`;
+    <span class="badges">${r && r.new ? '<span class="sev INFO" title="File đã thay đổi kể từ lần chạy trước">MỚI</span>' : ""}<span class="st sev ${r ? "OK" : "MED"}">${r ? "HỢP LỆ" : "THIẾU"}</span></span></div>`;
 }
 async function openFileDetail(role) {
   const r = S.roles[role];
@@ -162,18 +162,20 @@ async function openFileDetail(role) {
   }).join("");
 }
 function renderSlots() {
-  $("#slots-data").innerHTML = ["tracker", "ads", "activity"].map(slot).join("");
-  $("#slots-setting").innerHTML = ["logic", "defind"].map(slot).join("");
+  const ro = S.roles || {};
+  const adsSlot = ro.tracker && !(ro.ads && ro.ads.same_as) ? ["ads"] : [];  // only when ads_camp is a separate file / missing
+  $("#slots-data").innerHTML = ["tracker", ...adsSlot, "activity"].map(slot).join("");
+  $("#slots-setting").innerHTML = ["logic", ...(ro.defind ? ["defind"] : [])].map(slot).join("");
   $("#run-btn").disabled = !S.roles || ROLES.some((role) => !S.roles[role]);
 }
-const ROLES = ["tracker", "ads", "activity", "logic", "defind"];
+const ROLES = ["tracker", "ads", "activity", "logic"];
 async function useInputs(paths) {
   if (!paths || !paths.length) return;
   // New picks go first so they replace an earlier file of the same role.
   const r = await api.detect([...paths, ...S.paths]);
   if (bad(r)) return;
   S.roles = r.roles;
-  S.paths = Object.values(r.roles).flatMap((x) => x.paths || [x.path]);
+  S.paths = [...new Set(Object.values(r.roles).flatMap((x) => x.paths || [x.path]))];
   const msgs = [];
   if (r.missing.length) msgs.push("Còn thiếu: " + r.missing.map((m) => ROLE_NAME[m]).join(", ")
     + (r.tracker_missing?.length ? ` (CSV còn thiếu: ${r.tracker_missing.join(", ")})` : ""));
@@ -231,6 +233,20 @@ async function stopRun() {
   $("#stop-btn").innerHTML = '<span class="spin"></span> Đang dừng…';
   await api.cancel_run();
 }
+function runError(r) {
+  // A failing step stops the run: drop the progress view, say what to fix and exactly where.
+  clearInterval(ETA_TIMER);
+  const loc = r.location || {};
+  const where = loc.file ? `<div class="kv" style="margin-top:8px"><dt>File</dt><dd data-no-i18n>${esc(loc.file)}</dd>
+      ${loc.sheet ? `<dt>Sheet</dt><dd data-no-i18n>${esc(loc.sheet)}</dd>` : ""}
+      ${loc.columns ? `<dt>Cột cần có</dt><dd data-no-i18n><b>${loc.columns.map(esc).join(", ")}</b>${loc.row ? ` (dòng tiêu đề ${loc.row})` : ""}</dd>` : ""}
+      ${loc.cell ? `<dt>Ô</dt><dd data-no-i18n><b>${esc(loc.cell)}</b></dd>` : ""}</div>` : "";
+  $("#progress").innerHTML = `<div class="run-error" role="alert"><div style="display:flex;gap:8px;align-items:center"><span class="sev HIGH">LỖI</span>
+      <b>Dừng ở bước: ${esc(STEPS[r.step] || r.step || "Đọc dữ liệu")}</b></div>
+    <p style="margin:8px 0 0">${esc(r.error)}</p>${where}
+    <p class="muted" style="font-size:12px;margin:8px 0 0">Sửa file theo chỉ dẫn trên, lưu lại, rồi bấm Chạy lần nữa.</p></div>`;
+  $("#input-error").textContent = "";
+}
 async function doRun() {
   $("#run-btn").disabled = true;
   runningUi(true);
@@ -240,7 +256,8 @@ async function doRun() {
   const r = await api.run(S.paths, $("#as-of").value || null, $("#use-claude").checked);
   runningUi(false);
   $("#run-btn").disabled = false;
-  if (r.error) { $("#input-error").textContent = r.error; window.onProgress("load", "warn", r.error); return; }
+  if (r.error) { runError(r); return; }
+  useInputs(S.paths);  // files are no longer "Mới" after a run
   if (r.cancelled) { toast("Đã dừng – chưa có kết quả mới."); return; }
   setRun(r);
   if (r.stopped) toast("Đã dừng – kết quả rule đầy đủ, phần Claude bị bỏ dở.");

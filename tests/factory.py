@@ -282,3 +282,84 @@ def make_all_csv(dir_: Path) -> dict[str, Path]:
     out["logic"] = Path(shutil.copy(tmp["logic"], d / tmp["logic"].name))
     shutil.rmtree(d / "_xlsx")
     return out
+
+
+# ---------------------------------------------------------------- v4: one data workbook + logic with inventory
+INVENTORY = {"B000000001": 0, "B000000002": 20, "B000000003": 500, "B000000004": 60, "B000000005": 2000}  # units in stock
+
+
+def make_data_workbook(path: Path, drop_column: tuple[str, str] | None = None, stock_date: date = date(2026, 10, 19)) -> Path:
+    """The team's single 'Raw Data_All source' workbook: rules sheet first, then every table the app reads.
+    ads_camp has no campaign_id (the id is the trailing number of campaign_name), like the real export."""
+    raw = _raw_rows()
+    raw[0] = raw[0] + ["ppc_ordered_units"]
+    for r in raw[1:]:
+        r.append(1)
+    info = [["sku", "asin", "product_line_old", "status", "lifecycle", "PMKT PIC_Final", "Team Label"]]
+    info += [[sku, asin, pl, "Active", "Normal", pic, "Team Y" if pl == "PL Delta" else "Team X"] for asin, sku, pl, pic in PRODUCTS]
+    info[-1][3] = "Inactive"  # a listing issue
+    kpi = [["Month", "PIC SEM", "ASIN", "sku", "Product Line (Old)", "Current Stock", "GMV", "RS", "Spend_final", "TACOS"]]
+    for month in (9, 10):
+        for asin, sku, pl, pic in PRODUCTS:
+            if pl in ("PL Alpha", "PL Beta"):
+                kpi.append([month, pic, asin, sku, pl, INVENTORY.get(asin, 0), 5000 if pl == "PL Alpha" else 3000, 90,
+                            300 if pl == "PL Alpha" else 100, 0.06])
+    days = [datetime(2026, 10, d) for d in range(1, 32)]
+    summary = [["Date", datetime(2026, 10, 19), datetime(2026, 10, 1), "Campaign Gone", None],
+               ["Month", 10, None, "OCT_2026", "BAU"],
+               ["Timegone", 0.6, None, "Weekday"],
+               [None, None, None, "Day"] + days,
+               [None, None, None, "%Contribution GMV"] + [1 / 31] * 31,
+               [None, None, None, "%Contribution Promotion"] + [1 / 31] * 31,
+               [None, None, None, "%Contribution PPC"] + [0.05] * 10 + [0.5 / 21] * 21]
+    ads = [["report_date", "country", "account_name", "campaign_type", "campaign_name", "asin", "spend_usd", "clicks",
+            "impressions", "sales_14d", "unitsold_14d", "order_14d", "Product line", "SKU"]]
+    for d in DAYS:
+        for cid, name, typ, asins, spend, clicks, sales, orders in CAMPAIGNS:
+            for asin in asins:
+                ads.append([datetime.combine(d, datetime.min.time()), "USA", "Main Account", typ, f"{name}_{cid[-6:]}",
+                            asin, spend, clicks, 0, sales, 0, orders, "", ""])
+    inventory = [["log_date", "asin", "sku", "country", "inventory"]]
+    inventory += [[datetime.combine(stock_date, datetime.min.time()), a, s, "USA", INVENTORY[a]]
+                  for a, s, *_ in PRODUCTS if a in INVENTORY]
+    sheets = {
+        "Hướng dẫn lấy data": [[None], [1, "Chỉ lấy data của các SKU thuộc team"]],
+        "Summary": summary, "Product Info": info, "KPI": kpi, "raw_sso_us": raw,
+        "INELIGIBLE ASIN": [["log_date", "country", "sku", "account_name", "asin", "ad_group_name", "delivery_status"],
+                            [datetime(2026, 10, 18), "USA", "S003", "A", "B000000003", "g", "INELIGIBLE"],
+                            [datetime(2026, 10, 19), "USA", "S003", "A", "B000000003", "g", "INELIGIBLE"]],
+        "ads_camp": ads, "Inventory AMZ": inventory,
+    }
+    if drop_column:
+        sheet, col = drop_column
+        i = sheets[sheet][0].index(col)
+        sheets[sheet] = [r[:i] + r[i + 1:] for r in sheets[sheet]]
+    return write_xlsx(path, sheets)
+
+
+def make_logic_v4(path: Path) -> Path:
+    """v3 score model + section K (inventory guard), matrix sheet named 'Matrix_Product Line', plus the two
+    brief sheets the app must ignore."""
+    make_logic_v3(path)
+    wb = openpyxl.load_workbook(path)
+    wb["Matrix_PL"].title = "Matrix_Product Line"
+    ws = wb["Config"]
+    for label, value in [("K. Tồn kho (chốt chặn, không cộng vào điểm)", None),
+                         ('Ngưỡng "sắp hết hàng": số ngày bán còn lại <', 14), ('Ngưỡng "dư hàng": số ngày bán còn lại >', 90),
+                         ("Cộng hàng đang về trong (ngày tới)", 7), ("Lượng bán trung bình tính trên (ngày)", 7),
+                         ('Nhóm "Cần chú ý" khi % GMV L7D từ SKU hết/sắp hết ≥', 0.2),
+                         ('Nhóm "Nghiêm trọng" khi % GMV L7D từ SKU hết/sắp hết ≥', 0.5),
+                         ('Nhóm "Dư hàng" khi % GMV L7D từ SKU dư hàng ≥', 0.5),
+                         ("Campaign bị chặn khi % chi tiêu L7D trên ASIN hết/sắp hết ≥", 0.5),
+                         ("Số liệu tồn kho bị coi là quá cũ nếu cũ hơn (ngày)", 2)]:
+        ws.append([None, label, value])
+    wb.create_sheet("Performance Review_brief").append(["brief"])
+    wb.create_sheet("Alert_brief").append(["brief"])
+    wb.save(path)
+    return path
+
+
+def make_all_v4(dir_: Path) -> dict[str, Path]:
+    d = Path(dir_)
+    return {"data": make_data_workbook(d / "SSO US_Raw Data_All source.xlsx"), "activity": make_activity(d / "activity.xlsx"),
+            "logic": make_logic_v4(d / "Logic.xlsx")}

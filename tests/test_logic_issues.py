@@ -1,7 +1,7 @@
 import pytest
 
 from factory import make_logic, make_logic_v3
-from pmkt_alert.logic import DEFAULT_PARAMS, load_logic
+from pmkt_alert.logic import DEFAULT_INV, DEFAULT_PARAMS, load_logic
 
 
 def _codes(lg):
@@ -10,7 +10,7 @@ def _codes(lg):
 
 def test_v1_file_has_no_issues(tmp_path):
     lg = load_logic(make_logic(tmp_path / "Alert_Logic_Ver 1.xlsx"))
-    assert lg.issues == [] and lg.params == DEFAULT_PARAMS
+    assert lg.issues == [] and lg.params == {**DEFAULT_PARAMS, **DEFAULT_INV}  # inventory guard: silent defaults
 
 
 def test_v3_score_model_detected_and_parsed(tmp_path):
@@ -79,4 +79,4 @@ def test_unreadable_file_falls_back_entirely(tmp_path):
     from factory import write_xlsx
     p = write_xlsx(tmp_path / "Alert_Logic_v9.xlsx", {"Sheet": [["x"]]})
     lg = load_logic(p)
-    assert lg.params == DEFAULT_PARAMS and any(i["code"] == "NO_CONFIG" for i in lg.issues)
+    assert lg.params == {**DEFAULT_PARAMS, **DEFAULT_INV} and any(i["code"] == "NO_CONFIG" for i in lg.issues)

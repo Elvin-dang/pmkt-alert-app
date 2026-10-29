@@ -108,7 +108,7 @@ def _bundled_team() -> dict:
 
 def _kdf(password: str, salt: bytes) -> bytes:
     return Scrypt(salt=salt, length=32, n=2 ** 15, r=8, p=1).derive(password.encode("utf-8"))
-from .loaders import ROLES, TRACKER_REQUIRED, TRACKER_SHEETS, InputError, detect_inputs, input_files, load_inputs, role_of
+from .loaders import OPTIONAL_ROLES, ROLES, TRACKER_REQUIRED, TRACKER_SHEETS, InputError, detect_inputs, input_files, load_inputs, role_of
 from .logic import LogicError, load_logic, version_from_name
 from .pipeline import result_to_json, run_rules
 from .prompts import STYLE_SCHEMA, TEAM_SCHEMA, style_prompt, team_prompt
@@ -117,6 +117,7 @@ from .rules.actions import suggest_email_map
 from .store import Store
 from .updater import DEFAULT_REPO, apply_update, download_verified, is_newer, latest_release, recent_releases
 from .windows import Windows
+from .xlsx import sheet_names
 
 
 STOPPED = "Đã dừng theo yêu cầu"
@@ -143,16 +144,25 @@ def lead_only(fn):
     return wrapper
 
 
+def _error(e: Exception, message: str) -> dict:
+    """UI error: the message, plus where to fix it (file › sheet › cells) and the run step that failed, if known."""
+    out = {"error": message}
+    for k in ("location", "step"):
+        if getattr(e, k, None):
+            out[k] = getattr(e, k)
+    return out
+
+
 def safe(fn):
     @functools.wraps(fn)
     def wrapper(self, *a, **k):
         try:
             return fn(self, *a, **k)
         except (InputError, LogicError, ClaudeError, ValueError, RuntimeError, PermissionError, PackageError, TeamError) as e:
-            return {"error": str(e)}
+            return _error(e, str(e))
         except Exception as e:  # never let a traceback reach the UI
             self._log(traceback.format_exc())
-            return {"error": f"Lỗi không mong đợi: {e} (chi tiết: {self._store.base / 'error.log'})"}
+            return _error(e, f"Lỗi không mong đợi: {e} (chi tiết: {self._store.base / 'error.log'})")
     return wrapper
 
 
@@ -168,6 +178,7 @@ class Api:
         self._inputs = None
         self._paths: list[str] = []
         self._eta: Eta | None = None  # time-left estimate of the run in progress
+        self._step = ""  # step of the run in progress (named in errors)
         self._member: dict | None = None  # Member mode: the opened .pmkt (run, inputs, logic path, file)
         self._require_login = require_login  # the app: nothing works before sign-in (tests: off)
         self._sb_opener, self._sb_cache = sb_opener, None  # Supabase HTTP opener (tests: a fake), signed-in client
@@ -187,6 +198,8 @@ class Api:
             f.write(f"--- {datetime.now().isoformat()}\n{text}\n")
 
     def _progress(self, step: str, state: str, detail: str = "", call_finished: bool = False) -> None:
+        if state == "running" and ":" not in step and step != "review":
+            self._step = step
         eta = self._eta
         if eta is not None:
             if call_finished:
@@ -649,7 +662,9 @@ class Api:
                 found[role] = f
         info = lambda f: {"path": str(f), "name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1),  # noqa: E731
                           "modified": _mtime(f)}
-        roles = {r: info(f) for r, f in found.items() if r in ROLES}
+        roles = {r: info(f) for r, f in found.items() if r in ROLES or r in OPTIONAL_ROLES}
+        if "ads" not in roles and "tracker" in found and "ads_camp" in sheet_names(found["tracker"]):
+            roles["ads"] = {**info(found["tracker"]), "same_as": "tracker"}  # v4: the Data workbook carries ads_camp
         parts = {t: found[t] for t in TRACKER_SHEETS if t in found}
         tracker_missing = []
         if parts and "tracker" not in roles:
@@ -661,6 +676,9 @@ class Api:
                                     "modified": max(_mtime(f) for f in parts.values())}
         elif parts and "tracker" in roles:  # CSV tables override the workbook's sheets
             roles["tracker"]["paths"] = [roles["tracker"]["path"], *[str(f) for f in parts.values()]]
+        seen = self._store.get_settings().get("last_run_files") or {}
+        for r in roles.values():  # "Mới": changed since the last finished run
+            r["new"] = any(seen.get(p) != _mtime(Path(p)) for p in r.get("paths") or [r["path"]])
         return {"roles": roles, "missing": [r for r in ROLES if r not in roles], "unknown": unknown,
                 "tracker_missing": tracker_missing}
 
@@ -682,10 +700,14 @@ class Api:
     @lead_only
     def run(self, paths: list[str], as_of: str | None = None, use_claude: bool = True) -> dict:
         self._running = True
+        self._step = "load"
         self._eta = Eta(self._store.get_settings().get("step_times"))
         self._eta.plan(["load", "logic", "rules"] + (["claude", "logic_eval"] if use_claude else []), claude_calls=0)
         try:
             return self._run(paths, as_of, use_claude)
+        except Exception as e:
+            e.step = self._step  # which step stopped the run
+            raise
         finally:
             self._store.save_settings({"step_times": self._eta.learned()})
             self._eta = None
@@ -735,6 +757,8 @@ class Api:
             "files": {r: p.name for r, p in roles.items()},
         }
         run_id = self._store.save_run(rj, None)
+        used = {str(p) for p in roles.values()}  # results exist: these files are no longer "Mới"
+        self._store.save_settings({"last_run_files": {p: _mtime(Path(p)) for p in used}})
         self._progress("rules", "done", f"{len(rj['pl'])} PL · {len(rj['camp'])} campaign")
         ai = None
         status = self._status() if use_claude else None
