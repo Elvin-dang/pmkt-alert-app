@@ -371,6 +371,7 @@ const SORTS = {
   sev: [(r) => SEV[r.pacing_sev ?? r.sev] ?? 3, 1], name: [(r) => (r.pl || r.campaign || "").toLowerCase(), 1],
   gmv: [(r) => r.pct_gmv ?? -1, -1], spend: [(r) => r.pct_spend ?? -1, -1], tacos: [(r) => r.actual_tacos ?? -1, -1],
   dspend: [(r) => r.d_spend ?? -9, -1], excess: [(r) => r._excess ?? r.excess ?? 0, -1],
+  dnmv: [(r) => dNmv(r) ?? -9, -1], lastaction: [(r) => String(r.last_action_date || (r.pl && !r.campaign ? lastActionOfPl(r.pl) : "") || ""), -1],
   score: [(r) => r.score ?? -999, -1],
 };
 function sortRows(rows) {
@@ -408,7 +409,7 @@ function colChooser(btn) {
   pop.style.left = Math.max(8, Math.min(r.right - pop.offsetWidth, innerWidth - pop.offsetWidth - 8)) + "px";
   pop.style.top = r.bottom + 6 + "px";
 }
-function setHidden(set) { store("hiddenCols", JSON.stringify([...set])); renderResults(); }
+function setHidden(set) { store("hiddenCols2", JSON.stringify([...set])); renderResults(); }
 // Result columns: header, cells (PL row / campaign row), sort key and the definition shown by the ⓘ button.
 // Definitions follow the code (aggregate.py, rules/, evidence.py) – keep them in sync when a formula changes.
 const COLS = [
@@ -417,54 +418,103 @@ const COLS = [
       map: ["PL: Product Info › product_line_old, nối ASIN → SKU → PL", "PIC: Product Info › cột PIC của tháng (v3: PMKT PIC_Final)", "Campaign: ads_camp › campaign_name, gán vào PL theo ASIN quảng cáo"] },
     pl: (p, kids, open) => `<td><b>${esc(p.pl)}</b>${kids.length ? ` <span class="muted">(${kids.length})</span>` : ""}</td>`,
     camp: (c) => `<td class="muted" title="${esc(c.campaign)}">${esc(c.campaign)}</td>` },
-  { key: "sev", label: "Mức", sort: "sev",
+  { key: "sev", label: "Alert Level", sort: "sev",
     def: { what: "Mức độ ưu tiên của cảnh báo: HIGH (xử lý ngay), MED (trong tuần), LOW (theo dõi).",
       formula: "PL: theo rule pacing đầu tiên khớp · Campaign: theo ACoS camp ÷ ACoS PL, số click và excess spend",
       map: ["Ngưỡng: Alert_Logic › Config (vd. “Excess spend để lên HIGH”)"] },
     pl: (p) => `<td>${sev(p.pacing_sev)}</td>`, camp: (c) => `<td>${sev(c.sev)}</td>` },
-  { key: "action", label: "Pacing / Action",
+  { key: "placode", label: "PL action code",
+    def: { what: "Hướng ngân sách của Product Line (chỉ ở dòng PL).",
+      formula: "Mô hình chấm điểm: điểm ≥ 50 → SCALE DOWN, ≥ 25 → OPTIMIZE, ≤ −25 → SCALE UP, còn lại MAINTAIN; luật cứng NO DATA / NO PLAN / KHÔNG CHẠY / CHƯA ĐỦ DATA / BUDGET CAP; chốt chặn tồn kho đổi SCALE UP → CHỜ HÀNG",
+      map: ["Ngưỡng: Logic › Config (D, E, K)"] },
+    pl: (p) => `<td class="lab" style="color:${actionColor(p.pacing_action, p.pacing_sev)}">${esc(short(p.pacing_action))}</td>`, camp: () => "<td></td>" },
+  { key: "dspend2", label: "Change in spend", sort: "dspend", cls: "n",
+    def: { what: "Thay đổi chi tiêu 7 ngày gần nhất so với 7 ngày trước đó.", formula: "Spend L7D ÷ Spend P7D − 1",
+      map: ["PL: raw_sso_us › sp_spend + sb_spend + sd_spend", "Campaign: ads_camp › spend_usd"] },
+    pl: (p) => `<td class="n">${signed(p.d_spend)}</td>`, camp: (c) => `<td class="n">${signed(c.d_spend)}</td>` },
+  { key: "dnmv", label: "Change in NMV", sort: "dnmv", cls: "n",
+    def: { what: "Thay đổi doanh thu 7 ngày gần nhất so với 7 ngày trước đó.", formula: "PL: GMV L7D ÷ GMV P7D − 1 · Campaign: sales L7D ÷ sales P7D − 1",
+      map: ["PL: raw_sso_us › ordered_gmv_usd", "Campaign: ads_camp › sales_14d"] },
+    pl: (p) => `<td class="n">${signed(dNmv(p))}</td>`, camp: (c) => `<td class="n">${signed(dNmv(c))}</td>` },
+  { key: "lastaction", label: "Last action", sort: "lastaction",
+    def: { what: "Hành động gần nhất của PIC trên campaign (PL: hành động mới nhất trong các campaign của PL).",
+      formula: "Khớp Activity Log theo tên campaign; trong 3 ngày gần nhất = ĐÃ ACTION, cũ hơn mà vẫn còn cảnh báo = ACTION CŨ",
+      map: ["Activity Log › Level (Campaign: …), Type, thời gian"] },
+    pl: (p) => { const d = lastActionOfPl(p.pl); return `<td class="muted" style="white-space:nowrap">${d ? ddmm(d) : "—"}</td>`; },
+    camp: (c) => `<td style="white-space:nowrap">${c.last_action_date ? `${ddmm(String(c.last_action_date))} <span class="muted">${esc(c.last_action_type || "")}</span>` : '<span class="muted">—</span>'}${c.status && c.sev ? ` <span class="chip">${esc(c.status)}</span>` : ""}</td>` },
+  { key: "campcode", label: "Campaign action code",
+    def: { what: "Việc nên làm với campaign (chỉ ở dòng campaign).",
+      formula: "Chưa đủ click → WAIT; đủ click 0 order → PAUSE/NEGATE; còn lại so ACoS camp ÷ ACoS PL theo action của PL; ≥50% spend trên ASIN hết hàng → PAUSE – HẾT HÀNG, sắp hết → GIỮ – SẮP HẾT",
+      map: ["ads_camp (L7D, P7D) · Logic › Config G, K"] },
+    pl: () => "<td></td>",
+    camp: (c) => `<td class="lab" style="color:${actionColor(c.base_action, "")}">${esc(c.final_label || short(c.base_action))}</td>` },
+  { key: "reason", label: "Reason",
+    def: { what: "Vì sao có cảnh báo / khuyến nghị.", formula: "PL: TACoS, target riêng & Dept, Excess$ vs Dept, GMV/Spend pace, điểm, tồn kho · Campaign: ACoS so với PL, click, excess, xu hướng, tồn kho",
+      map: ["Tổng hợp từ các cột trên + Evidence"] },
+    pl: (p) => `<td class="reason"><div title="${esc(p.pacing_reason || "")}">${esc(p.pacing_reason || "—")}</div></td>`,
+    camp: (c) => { const t = campReason(c); return `<td class="reason"><div title="${esc(t)}">${esc(t || "—")}</div></td>`; } },
+  { key: "action", label: "Pacing / Action", optional: true,
     def: { what: "Việc nên làm với PL / campaign.",
       formula: "PL (Ver 1): rule đầu tiên khớp theo thứ tự NO PLAN → KHÔNG CHẠY → SCALE DOWN → OPTIMIZE → SCALE UP → BUDGET CAP → CHECK → MAINTAIN, dựa trên GMV pace, Spend pace và TACoS ÷ target. PL (v3): theo Điểm và khung Department. Campaign: theo action của PL + ACoS camp ÷ ACoS PL; trạng thái (đã / chưa action) lấy từ Activity Log.",
       map: ["Ngưỡng: Alert_Logic › Config", "Trạng thái campaign: Activity Log › campaign + ngày action"] },
     pl: (p) => `<td class="lab" style="color:${actionColor(p.pacing_action, p.pacing_sev)}">${esc(short(p.pacing_action))}</td>`,
     camp: (c) => `<td class="lab" style="color:${actionColor(c.base_action, "")}">${esc(c.final_label || short(c.base_action))}</td>` },
-  { key: "trend", label: "Trend L7D",
+  { key: "trend", label: "Trend L7D", optional: true,
     def: { what: "Xu hướng 7 ngày gần nhất (L7D) so với 7 ngày trước đó (P7D).",
       formula: "PL: Δ Spend, Δ ACoS, Δ TACoS so với ngưỡng → tạo key, tra bảng Matrix_PL ra nhãn · Campaign: Δ ACoS và Δ Spend của campaign",
       map: ["PL: raw_sso_us (spend, ppc_ordered_gmv_usd, ordered_gmv_usd)", "Campaign: ads_camp (spend_usd, sales_14d)", "Ngưỡng: Alert_Logic › Config (Spend / ACoS / TACoS) + sheet Matrix_PL"] },
     pl: (p) => `<td class="lab">${esc(p.trend_label || "—")}</td>`,
     camp: (c) => `<td class="muted">${esc(c.camp_trend ? c.camp_trend.replace("7D: ", "") : "")}</td>` },
-  { key: "gmv", label: "GMV %", sort: "gmv", cls: "n",
+  { key: "gmv", label: "GMV %", sort: "gmv", cls: "n", optional: true,
     def: { what: "Tiến độ GMV tháng so với target.", formula: "GMV MTD ÷ target GMV tháng",
       map: ["GMV MTD: raw_sso_us › ordered_gmv_usd, từ ngày 1 tới ngày data", "Target: KPI › GMV của tháng, cộng các ASIN của PL"],
       note: "So với time gone: GMV % ÷ time gone = GMV pace (1× là đúng tiến độ)." },
     pl: (p) => `<td class="n">${pct(p.pct_gmv)}</td>`, camp: () => "<td></td>" },
-  { key: "spend", label: "Spend %", sort: "spend", cls: "n",
+  { key: "spend", label: "Spend %", sort: "spend", cls: "n", optional: true,
     def: { what: "Tiến độ chi tiêu ads tháng so với target.", formula: "Spend MTD ÷ target spend tháng",
       map: ["Spend MTD: raw_sso_us › sp_spend + sb_spend + sd_spend", "Target: KPI › Spend_final của tháng"],
       note: "Spend % ÷ time gone = Spend pace." },
     pl: (p) => `<td class="n">${pct(p.pct_spend)}</td>`, camp: () => "<td></td>" },
-  { key: "tacos", label: "TACoS", sort: "tacos", cls: "n",
+  { key: "tacos", label: "TACoS", sort: "tacos", cls: "n", optional: true,
     def: { what: "PL: TACoS tháng / target TACoS. Campaign: ACoS của campaign so với ACoS chung của PL.",
       formula: "TACoS = Spend MTD ÷ GMV MTD · Target TACoS = target spend ÷ target GMV · Campaign: (spend L7D ÷ sales L7D của camp) ÷ (spend L7D ÷ sales L7D của mọi camp trong PL)",
       map: ["raw_sso_us (spend, ordered_gmv_usd) · KPI (GMV, Spend_final)", "Campaign: ads_camp › spend_usd, sales_14d"] },
     pl: (p) => `<td class="n">${pct(p.actual_tacos, 1)} <span class="muted">/${pct(p.target_tacos, 1)}</span></td>`,
     camp: (c) => `<td class="n">ACoS ${num(c.acos_ratio) ? Number(c.acos_ratio).toFixed(2) + "×" : "—"}</td>` },
-  { key: "dspend", label: "Δ Spend", sort: "dspend", cls: "n",
+  { key: "dspend", label: "Δ Spend", sort: "dspend", cls: "n", optional: true,
     def: { what: "Thay đổi chi tiêu 7 ngày gần nhất so với 7 ngày trước đó.", formula: "Spend L7D ÷ Spend P7D − 1",
       map: ["PL: raw_sso_us › sp_spend + sb_spend + sd_spend", "Campaign: ads_camp › spend_usd"] },
     pl: (p) => `<td class="n">${signed(p.d_spend)}</td>`, camp: (c) => `<td class="n">${signed(c.d_spend)}</td>` },
-  { key: "score", label: "Điểm", sort: "score", cls: "n", v3: true,
+  { key: "score", label: "Điểm", sort: "score", cls: "n", v3: true, optional: true,
     def: { what: "Điểm tổng hợp của PL (chỉ với file logic mô hình chấm điểm v3). Âm = nên giảm, dương = có thể tăng.",
       formula: "Σ(w × s) ÷ Σw, với s1…s6 = (TACoS ÷ target − 1), (TACoS ÷ target Dept − 1), −(Ads dependency ÷ benchmark − 1), Δ TACoS, GMV pace − 1, Spend pace − 1; mỗi s chia độ nhạy × 100, giới hạn ±100",
       map: ["Trọng số w1–w6 và độ nhạy: Alert_Logic › Config"] },
     pl: (p) => `<td class="n">${p.score != null ? Math.round(p.score) : "—"}</td>`, camp: () => "<td></td>" },
-  { key: "excess", label: "Excess $", sort: "excess", cls: "n",
+  { key: "excess", label: "Excess $", sort: "excess", cls: "n", optional: true,
     def: { what: "Chi tiêu L7D vượt mức hợp lý – số tiền có thể cắt.", formula: "Campaign: MAX(0, spend L7D − sales L7D × ACoS L7D của PL) · PL: cộng excess của các campaign",
       map: ["ads_camp › spend_usd, sales_14d (7 ngày gần nhất)"] },
     pl: (p) => `<td class="n">${p._excess ? money(p._excess) : "—"}</td>`, camp: (c) => `<td class="n">${money(c.excess)}</td>` },
 ];
-function hiddenCols() { try { return new Set(JSON.parse(store("hiddenCols") || "[]")); } catch { return new Set(); } }
+function hiddenCols() {
+  // Default view = the Alert_brief "Update" columns; the older metrics stay available in "Cột".
+  try { const saved = store("hiddenCols2"); if (saved) return new Set(JSON.parse(saved)); } catch { /* fall through */ }
+  return new Set(COLS.filter((c) => c.optional).map((c) => c.key));
+}
+const dNmv = (r) => (r.p7d_gmv != null ? (r.p7d_gmv ? r.l7d_gmv / r.p7d_gmv - 1 : null) : r.p7d_sales ? r.l7d_sales / r.p7d_sales - 1 : null);
+function lastActionOfPl(pl) {
+  const ds = S.run.camp.filter((c) => c.pl === pl && c.pic === S.pic && c.last_action_date).map((c) => String(c.last_action_date));
+  return ds.length ? ds.sort().at(-1) : null;
+}
+function campReason(c) {
+  const parts = [];
+  if (num(c.acos_ratio)) parts.push(`ACoS ${Number(c.acos_ratio).toFixed(2)}× PL`);
+  if (num(c.l7d_clicks)) parts.push(`${Math.round(c.l7d_clicks)} click (cần ${c.min_clicks ?? "—"})`);
+  if (c.excess > 0) parts.push(`excess ${money(c.excess)}`);
+  if (c.camp_trend) parts.push(c.camp_trend);
+  if (c.inv_note) parts.push(c.inv_note);
+  if (c.followup_check) parts.push(c.followup_check);
+  return parts.join(" · ");
+}
 function shownCols() {
   const hide = hiddenCols(), v3 = S.run.model === "score_v3";
   return COLS.filter((c) => (!c.v3 || v3) && (c.fixed || !hide.has(c.key)));
@@ -493,7 +543,7 @@ function alertsTable() {
       <td class="acts">${evBtn(c.unit_id)}${fbBtn(c.unit_id, `${c.campaign} · ${short(c.final_label || c.base_action)}`, sent.has(c.unit_id))}</td></tr>`).join("") : "";
     return head + children;
   }).join("");
-  const hiddenN = COLS.filter((c) => (!c.v3 || S.run.model === "score_v3") && !c.fixed && hiddenCols().has(c.key)).length;
+  const hiddenN = COLS.filter((c) => (!c.v3 || S.run.model === "score_v3") && !c.fixed && !c.optional && hiddenCols().has(c.key)).length;
   return `<div class="tbl"><table><thead><tr><th></th>${cols.map((c) => th(c)).join("")}<th></th></tr></thead><tbody>${rows}</tbody></table></div>
     <p class="muted" style="font-size:12px">${visible.length} PL · bấm tiêu đề cột để sắp xếp · ⓘ xem định nghĩa · “Bằng chứng” mở dữ liệu gốc.${hiddenN ? ` · Đang ẩn ${hiddenN} cột` : ""}</p>`;
 }
