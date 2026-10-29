@@ -64,6 +64,7 @@ function go(id) {
   $$("nav button").forEach((b) => (b.dataset.go === id ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current")));
   if (id === "review") loadReview();
   if (id === "dashboard") loadDashboard();
+  if (id === "perf") loadPerf();
   if (id === "lessons") loadLessons();
   if (id === "settings") loadSettings();
 }
@@ -1416,4 +1417,92 @@ async function initTeam() {
   const s = await api.startup_open();
   if (!s.error && s.opened) { const res = await api.results(); if (!res.error) setRun(res); await loadRole(); go("results"); }
   if (r.signed_in && r.role === "member") loadReports(!(s && s.opened));
+}
+
+// ------------------------------------------------------------------ Performance Review (logic brief)
+const PF_METRICS = [["gmv", "GMV", "money"], ["rs", "RS", "int"], ["spend", "Ads Spend", "money"], ["tacos", "TACOS", "pct"]];
+const pfFmt = { money: (v) => money(v), int: (v) => (num(v) ? Math.round(v).toLocaleString("en-US") : "—"), pct: (v) => pct(v, 1) };
+function pfAchieve(v, key, gone) {
+  if (!num(v)) return '<span class="muted">—</span>';
+  // GMV / RS behind the calendar = red; spend / TACoS ahead of it = red (spending faster than planned)
+  const bad = key === "gmv" || key === "rs" ? v < gone * 0.9 : v > (key === "tacos" ? 1.1 : gone * 1.1);
+  return `<span class="num" style="color:${bad ? "var(--high)" : "var(--fg)"};font-weight:${bad ? 700 : 500}">${pct(v, 1)}</span>`;
+}
+function pfMetricRows(obj, lead, gone, tail = () => "") {
+  return PF_METRICS.map(([k, label, f], i) => `<tr class="${i === 0 ? "grp" : "sub"}">${i === 0 ? lead : ""}<td class="muted">${label}</td>
+    <td class="n">${pfFmt[f](obj.target[k])}</td><td class="n">${pfFmt[f](obj.actual[k])}</td><td class="n">${pfAchieve(obj.achieve[k], k, gone)}</td>${i === 0 ? tail() : ""}</tr>`).join("");
+}
+async function loadPerf(keepFilters) {
+  if (!S.runId && !(S.role && S.role.role === "member")) { $("#pf-body").innerHTML = '<div class="empty">Chưa có dữ liệu – chạy dữ liệu trước.</div>'; return; }
+  const f = keepFilters ? { pic: $("#pf-pic").value, start: $("#pf-start").value, end: $("#pf-end").value, pl: $("#pf-pl").value } : { pic: S.pfPic || S.pic };
+  $("#pf-body").innerHTML = '<div class="muted"><span class="spin"></span> Đang tính…</div>';
+  const d = await api.performance(f, S.runId);
+  if (d.error) { $("#pf-body").innerHTML = `<div class="empty">${esc(d.error)}</div>`; return; }
+  S.pf = d; S.pfPic = d.filters.pic;
+  const ff = d.filters;
+  $("#pf-pic").innerHTML = ff.pics.map((p) => `<option ${p === ff.pic ? "selected" : ""}>${esc(p)}</option>`).join("");
+  $("#pf-pic").disabled = !!(S.role && S.role.role === "member");
+  $("#pf-pl").innerHTML = '<option value="">Tất cả</option>' + ff.pls.map((p) => `<option ${p === ff.pl ? "selected" : ""}>${esc(p)}</option>`).join("");
+  for (const [id, v] of [["#pf-start", ff.start], ["#pf-end", ff.end]]) { $(id).value = v; $(id).min = ff.min; $(id).max = ff.max; }
+  renderPerf();
+}
+function renderPerf() {
+  const d = S.pf, t = d.summary, gone = t.campaign_gone ?? t.time_gone;
+  $("#pf-sub").textContent = `${ddmm(d.filters.start)} – ${ddmm(d.filters.end)}/${d.filters.end.slice(0, 4)} · thực tế theo khung thời gian, target của tháng · PIC ${d.filters.pic || "—"}`;
+  const tile = (lbl, val, sub = "") => `<div class="card kpi"><div class="lbl">${lbl}</div><div class="val num">${val}</div>${sub ? `<div class="muted" style="font-size:12px">${sub}</div>` : ""}</div>`;
+  const pls = d.pls.map((r) => pfMetricRows(r, `<td rowspan="4"><b>${esc(r.pl)}</b></td>`, gone,
+    () => `<td rowspan="4" class="lab" style="color:${actionColor(r.action, r.sev)}">${esc(short(r.action) || "—")}</td><td rowspan="4" class="reason"><div title="${esc(r.reason)}">${esc(r.reason || "—")}</div></td>`)).join("");
+  const skus = d.skus.map((r) => pfMetricRows(r, `<td rowspan="4" data-no-i18n><b>${esc(r.sku)}</b><div class="muted" style="font-size:11px">${esc(r.asin)}</div></td>
+      <td rowspan="4">${esc(r.pl)}</td><td rowspan="4" style="max-width:220px">${esc(r.product)}</td>
+      <td rowspan="4">${r.ineligible.current ? `<span class="sev ${r.ineligible.current.startsWith("INELIGIBLE") ? "HIGH" : "MED"}" data-no-i18n>${esc(r.ineligible.current)}</span>` : '<span class="muted">—</span>'}
+        <div class="muted" style="font-size:11px">${r.ineligible.changes} lần đổi · ${r.ineligible.days} ngày ineligible</div></td>
+      <td rowspan="4" class="n">${r.stock == null ? "—" : Math.round(r.stock).toLocaleString("en-US")}</td>
+      <td rowspan="4">${r.listing_issue ? `<span class="sev MED">${esc(r.listing_issue)}</span>` : '<span class="muted">—</span>'}</td>`, gone)).join("");
+  const camps = d.campaigns.map((c) => `<tr><td class="muted" title="${esc(c.campaign)}" style="max-width:320px">${esc(c.campaign)}</td>
+      <td class="n">${money(c.spend)}</td><td class="n">${money(c.nmv)}</td><td class="n">${Math.round(c.orders)}</td><td class="n">${pct(c.acos, 1)}</td>
+      <td class="n">${signed(c.trend_spend)}</td><td class="n">${signed(c.trend_acos)}</td>
+      <td style="white-space:nowrap">${c.last_action ? `${ddmm(String(c.last_action))} <span class="muted">${esc(c.last_action_type)}</span>` : '<span class="muted">—</span>'}</td>
+      <td>${c.alert ? `<span class="sev HIGH" title="${esc(c.action)}">YES</span>` : '<span class="muted">No</span>'}</td></tr>`).join("");
+  const plNote = d.filters.pl ? ` · lọc theo <b>${esc(d.filters.pl)}</b>` : "";
+  $("#pf-body").innerHTML = `
+    <div class="grid pf-tiles">
+      ${tile("Time gone / Campaign gone", `${pct(t.time_gone)} / ${t.campaign_gone == null ? "—" : pct(t.campaign_gone)}`, "theo tháng của khung thời gian")}
+      ${tile("GMV", money(t.gmv), `${pct(t.gmv_pct, 1)} target tháng (${money(t.gmv_target)})`)}
+      ${tile("Ads Spend", money(t.spend), `${pct(t.spend_pct, 1)} target tháng (${money(t.spend_target)})`)}
+      ${tile("Ads NMV", money(t.ads_nmv))}${tile("ACOS", pct(t.acos, 1))}${tile("TACOS", pct(t.tacos, 1))}${tile("%Ads RS / Total", pct(t.ads_rs_share, 1))}
+    </div>
+    <div class="card" style="margin-top:12px"><h2>Product line</h2><div class="tbl pf-tbl"><table>
+      <thead><tr><th>Product line</th><th>Chỉ số</th><th class="n">Target</th><th class="n">Actual</th><th class="n">%Achieve</th><th>PL action code</th><th>Reason</th></tr></thead>
+      <tbody>${pls || '<tr><td colspan="7" class="muted">Không có dữ liệu</td></tr>'}</tbody></table></div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">%Achieve tô đỏ khi GMV/RS chậm hơn ${pct(gone)} (campaign gone) quá 10%, hoặc spend/TACOS vượt mức tương ứng.</p></div>
+    <div class="grid g2" style="margin-top:12px">
+      <div class="card"><h2>GMV target & actual · Ads NMV · %Ads RS${plNote}</h2><div class="chartbox"><canvas id="pf-c1" role="img" aria-label="GMV theo ngày"></canvas></div></div>
+      <div class="card"><h2>Ads Spend target & actual · ACOS${plNote}</h2><div class="chartbox"><canvas id="pf-c2" role="img" aria-label="Ads spend theo ngày"></canvas></div></div>
+    </div>
+    <div class="card" style="margin-top:12px"><h2>TACOS target & actual${plNote}</h2><div class="chartbox"><canvas id="pf-c3" role="img" aria-label="TACOS theo ngày"></canvas></div></div>
+    <div class="card" style="margin-top:12px"><h2>SKU${plNote}</h2><div class="tbl pf-tbl" style="max-height:560px"><table>
+      <thead><tr><th>SKU</th><th>Product line</th><th>Product name</th><th>Ineligible status</th><th class="n">Current stock</th><th>Listing issue</th><th>Chỉ số</th><th class="n">Target</th><th class="n">Actual</th><th class="n">%Achieve</th></tr></thead>
+      <tbody>${skus || '<tr><td colspan="10" class="muted">Không có SKU</td></tr>'}</tbody></table></div></div>
+    <div class="card" style="margin-top:12px"><h2>Campaign${plNote}</h2><div class="tbl" style="max-height:520px"><table>
+      <thead><tr><th>Campaign name</th><th class="n">Ads Spend</th><th class="n">Ads NMV</th><th class="n">Ads Order</th><th class="n">ACOS</th><th class="n">Trend Spend L7D</th><th class="n">Trend ACOS L7D</th><th>Last action</th><th>Alert</th></tr></thead>
+      <tbody>${camps || '<tr><td colspan="9" class="muted">Không có campaign</td></tr>'}</tbody></table></div></div>`;
+  drawPerfCharts();
+}
+function drawPerfCharts() {
+  const d = S.pf.daily, pal = SERIES[isDark() ? "dark" : "light"], grey = cssVar("--muted");
+  const labels = d.map((x) => ddmm(x.date));
+  const money0 = (v) => "$" + Number(v).toLocaleString("en-US", { maximumFractionDigits: 0 });
+  const bar = (label, key, color) => ({ type: "bar", label, data: d.map((x) => x[key]), backgroundColor: color, borderRadius: 3, yAxisID: "y", order: 2 });
+  const line = (label, key, color, axis, dash) => ({ type: "line", label, data: d.map((x) => x[key]), borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: 2, borderDash: dash || [], yAxisID: axis, order: 1, spanGaps: true });
+  const pctAxis = { position: "right", grid: { display: false }, ticks: { callback: (v) => pct(v) }, beginAtZero: true };
+  const tip = (fmts) => ({ callbacks: { label: (c) => `${c.dataset.label}: ${fmts[c.dataset.yAxisID](c.raw)}` } });
+  drawChart("pf-c1", { type: "bar", data: { labels, datasets: [bar(I18N.t("GMV target"), "gmv_target", grey), bar("GMV actual", "gmv", pal[0]), bar("Ads NMV", "ads_nmv", pal[2]), line("%Ads RS / Total RS", "ads_rs_share", pal[1], "y1")] },
+    options: { plugins: { tooltip: tip({ y: money, y1: (v) => pct(v, 1) }) }, scales: { y: { beginAtZero: true, ticks: { callback: money0 } }, y1: pctAxis } } });
+  drawChart("pf-c2", { type: "bar", data: { labels, datasets: [bar(I18N.t("Ads Spend target"), "spend_target", grey), bar("Ads Spend actual", "spend", pal[1]), line("ACOS", "acos", pal[4], "y1")] },
+    options: { plugins: { tooltip: tip({ y: money, y1: (v) => pct(v, 1) }) }, scales: { y: { beginAtZero: true, ticks: { callback: money0 } }, y1: pctAxis } } });
+  drawChart("pf-c3", { type: "line", data: { labels, datasets: [line("TACOS target", "tacos_target", grey, "y", [5, 4]), line("TACOS actual", "tacos", pal[0], "y")] },
+    options: { plugins: { tooltip: tip({ y: (v) => pct(v, 1) }) }, scales: { y: { beginAtZero: true, ticks: { callback: (v) => pct(v) } } } } });
+}
+for (const id of ["#pf-pic", "#pf-start", "#pf-end", "#pf-pl"]) {
+  document.addEventListener("change", (e) => { if (e.target.matches(id)) { if (id === "#pf-pic") $("#pf-pl").value = ""; loadPerf(true); } });
 }

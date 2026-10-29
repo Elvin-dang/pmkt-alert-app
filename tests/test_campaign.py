@@ -66,3 +66,9 @@ def test_zero_pl_acos_follows_excel_text_comparison():
     r = run_one(pl_acos=0, pl_cr=0, l7d_clicks=20, l7d_orders=1, l7d_sales=10, l7d_spend=5)
     assert r.acos_ratio is None and r.base_action == "OPTIMIZE – ACoS cao" and r.min_clicks == 15
     assert r.excess == 5.0
+
+
+def test_zero_previous_acos_has_no_trend():
+    # P7D: sales but no spend → ACoS 0 → no ratio to compare against (real data had this; it used to crash)
+    r = run_one(p7d_spend=0.0, p7d_sales=50.0)
+    assert r["d_acos"] is None

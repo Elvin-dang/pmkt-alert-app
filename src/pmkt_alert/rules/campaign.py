@@ -77,7 +77,7 @@ def campaign(camp: pd.DataFrame, pl: pd.DataFrame, p: dict, k_by_type: dict) -> 
     p7 = [_acos(s, v) for s, v in zip(out.p7d_spend, out.p7d_sales)]
     l3 = [_acos(s, v) for s, v in zip(out.l3d_spend, out.l3d_sales)]
     d_spend = [None if not ps else ls / ps - 1 for ls, ps in zip(out.l7d_spend, out.p7d_spend)]
-    d_acos = [None if a is None or b is None else a / b - 1 for a, b in zip(l7, p7)]
+    d_acos = [None if a is None or not b else a / b - 1 for a, b in zip(l7, p7)]  # P7D ACoS 0 → no trend (Excel IFERROR)
     ratio = [None if a is None or not b else a / b for a, b in zip(l7, out.pl_acos)]
     out["l7d_acos"], out["p7d_acos"], out["l3d_acos"] = _obj(l7, idx), _obj(p7, idx), _obj(l3, idx)
     out["d_spend"], out["d_acos"], out["acos_ratio"] = _obj(d_spend, idx), _obj(d_acos, idx), _obj(ratio, idx)

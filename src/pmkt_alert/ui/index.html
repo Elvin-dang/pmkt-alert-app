@@ -15,6 +15,7 @@
  <symbol id="gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
  <symbol id="mail" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/></symbol>
  <symbol id="lock" viewBox="0 0 24 24"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></symbol>
+ <symbol id="trend" viewBox="0 0 24 24"><polyline points="3 17 9 11 13 15 21 7"/><polyline points="15 7 21 7 21 13"/></symbol>
  <symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/></symbol>
  <symbol id="cols" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/><path d="M15 4v16"/></symbol>
  <symbol id="eye" viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></symbol>
@@ -46,6 +47,7 @@
 <nav aria-label="Điều hướng chính">
   <button data-go="run" aria-current="page" data-lead><svg class="i" aria-hidden="true"><use href="#play"/></svg>Chạy dữ liệu</button>
   <button data-go="results"><svg class="i" aria-hidden="true"><use href="#bell"/></svg>Kết quả<span class="count hidden" id="nav-results"></span></button>
+  <button data-go="perf"><svg class="i" aria-hidden="true"><use href="#trend"/></svg>Performance Review</button>
   <button data-go="dashboard"><svg class="i" aria-hidden="true"><use href="#chart"/></svg>Dashboard đội</button>
   <button data-go="review" data-lead><svg class="i" aria-hidden="true"><use href="#scale"/></svg>Rà soát logic<span class="count med hidden" id="nav-review"></span></button>
   <button data-go="lessons"><svg class="i" aria-hidden="true"><use href="#book"/></svg>Bài học & Lịch sử</button>
@@ -99,6 +101,19 @@
     <button class="btn" id="export" data-lead><svg class="i" aria-hidden="true"><use href="#download"/></svg>Xuất Excel</button>
   </div>
   <div id="results-body"><div class="empty" style="margin-top:12px">Chưa có kết quả – vào “Chạy dữ liệu”.</div></div>
+</section>
+
+<section id="perf">
+  <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+    <div><h1>Performance Review</h1><p class="sub" style="margin:0" id="pf-sub">Thực tế theo khung thời gian so với target của tháng.</p></div>
+  </div>
+  <div class="filters" style="margin-top:12px" id="pf-filters">
+    <div><label for="pf-pic">PIC</label><select id="pf-pic" style="width:auto;min-width:200px"></select></div>
+    <div><label for="pf-start">Từ ngày</label><input type="date" id="pf-start"></div>
+    <div><label for="pf-end">Đến ngày</label><input type="date" id="pf-end"></div>
+    <div><label for="pf-pl">Product line</label><select id="pf-pl" style="width:auto;min-width:220px"></select></div>
+  </div>
+  <div id="pf-body" style="margin-top:12px"><div class="empty">Chưa có dữ liệu – chạy dữ liệu trước.</div></div>
 </section>
 
 <section id="dashboard">

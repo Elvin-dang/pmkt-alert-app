@@ -2,6 +2,16 @@
 
 Mỗi phiên bản ghi rõ: **Mới**, **Thay đổi**, **Sửa lỗi**. Bản phát hành sẽ không build nếu thiếu mục cho phiên bản đó.
 
+## v0.1.8 – 29/10/2026
+### Mới
+- **Đầu vào mới:** Data (1 file chứa raw_sso_us, Product Info, KPI, INELIGIBLE ASIN, ads_camp, Summary, Inventory AMZ) + Activity Log; Setting chỉ còn file Logic. Không cần Defind nữa. Vẫn đọc được bộ file cũ.
+- **Logic v4:** file Logic mới (sheet Matrix_Product Line, Config mục K) – thêm **chốt chặn tồn kho**: SKU hết / sắp hết / dư hàng theo số ngày bán còn lại (Inventory AMZ); PL "Cần chú ý"/"Nghiêm trọng" không được SCALE UP (→ CHỜ HÀNG); campaign ≥50% chi tiêu trên ASIN hết hàng → PAUSE – HẾT HÀNG, sắp hết → GIỮ – SẮP HẾT; cảnh báo số liệu tồn kho thiếu / quá cũ.
+- **Trang Performance Review:** lọc PIC / khung thời gian / Product line; ô tổng quan (time gone & campaign gone, GMV & Ads Spend so với target tháng, Ads NMV, ACOS, TACOS, %Ads RS); bảng Product line và SKU (Target / Actual / %Achieve cho GMV, RS, Ads Spend, TACOS; trạng thái ineligible, tồn kho, listing issue); 3 biểu đồ theo ngày (target theo ngày lấy từ %Contribution trong sheet Summary); bảng campaign.
+- **Bảng Kết quả theo Alert_brief:** Alert Level, PL action code, Change in spend, Change in NMV, Last action, Campaign action code, Reason. Các cột cũ vẫn bật được trong nút **Cột**.
+- **Chạy dữ liệu:** nhãn **MỚI** khi file đã thay đổi kể từ lần chạy trước (tự mất sau khi chạy). Khi một bước lỗi, app dừng ngay và chỉ rõ file › sheet › cột / ô cần sửa.
+### Sửa lỗi
+- Không còn lỗi chia cho 0 khi ACoS 7 ngày trước của campaign bằng 0.
+
 ## v0.1.7 – 28/10/2026
 ### Mới
 - **Tài khoản nhóm có sẵn trong app** – không ai phải cài đặt máy chủ. Đăng nhập bằng email + mật khẩu.

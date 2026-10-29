@@ -10,7 +10,7 @@ import pandas as pd
 
 from .aggregate import NO_PIC, asin_map
 
-_div = lambda a, b: (a / b) if b else None  # noqa: E731
+_div = lambda a, b: (a / b) if b and a is not None else None  # noqa: E731
 
 
 def _iso(d) -> str:
@@ -18,17 +18,21 @@ def _iso(d) -> str:
 
 
 def _ineligible(ie: pd.DataFrame, asin: str, month_start: date, end: date, last_log: date | None) -> dict:
+    """current = the ASIN's delivery_status on the last log day ≤ end ('' = not listed = eligible);
+    changes = status changes day to day this month; days = days listed as INELIGIBLE this month."""
     rows = ie[(ie["asin"] == asin) & (ie["date"] >= month_start) & (ie["date"] <= end)]
-    bad = {d for d, s in zip(rows["date"], rows["status"]) if str(s).upper().startswith("INELIGIBLE")}
-    flips, prev = 0, None
-    day = month_start
+    by_day = {d: str(s).strip().upper() for d, s in zip(rows["date"], rows["status"]) if s == s and s is not None}
+    flips, prev, day = 0, None, month_start
     while day <= end:
-        state = day in bad
+        state = by_day.get(day, "")
         if prev is not None and state != prev:
             flips += 1
         prev, day = state, day + timedelta(days=1)
-    now = last_log is not None and last_log in bad and last_log <= end
-    return {"current": "INELIGIBLE" if now else "", "changes": flips, "days": len(bad)}
+    return {"current": by_day.get(last_log, "") if last_log else "", "changes": flips,
+            "days": sum(1 for v in by_day.values() if v.startswith("INELIGIBLE"))}
+
+
+LISTING_ISSUE_LIFECYCLE = ("withdrawal",)  # Normal / Introduction / Turnkey are ordinary stages
 
 
 def _listing_issue(row: dict) -> str:
@@ -36,7 +40,7 @@ def _listing_issue(row: dict) -> str:
     status, life = str(row.get("status") or ""), str(row.get("lifecycle") or "")
     if status and status.lower() != "active":
         parts.append(status)
-    if life and life.lower() not in ("normal", ""):
+    if life.lower() in LISTING_ISSUE_LIFECYCLE:
         parts.append(life)
     return " · ".join(parts)
 
@@ -58,13 +62,10 @@ def performance(inputs, rj: dict, team_label: str = "", pic: str | None = None, 
     pls_all = sorted(set(amap.loc[amap["pic"] == pic, "pl"]) if pic else set(amap["pl"]))
     if pic:
         amap = amap[amap["pic"] == pic]
-    if pl:
-        amap = amap[amap["pl"] == pl]
-    asins = set(amap["asin"])
-
-    raw = inputs.raw[(inputs.raw["date"] >= start_d) & (inputs.raw["date"] <= end_d) & inputs.raw["asin"].isin(asins)]
+    # Summary tiles + PL table: the PIC; SKU table, charts and campaigns follow the Product line filter (brief C7).
+    raw = inputs.raw[(inputs.raw["date"] >= start_d) & (inputs.raw["date"] <= end_d) & inputs.raw["asin"].isin(set(amap["asin"]))]
     raw = raw.merge(amap[["asin", "pl"]], on="asin")
-    kpi = inputs.kpi[(inputs.kpi["month"] == end_d.month) & inputs.kpi["asin"].isin(asins)].merge(amap[["asin", "pl"]], on="asin")
+    kpi = inputs.kpi[(inputs.kpi["month"] == end_d.month) & inputs.kpi["asin"].isin(set(amap["asin"]))].merge(amap[["asin", "pl"]], on="asin")
     contrib = {d: v for d, v in (inputs.contrib or {}).items() if d.month == end_d.month and d.year == end_d.year}
     share = lambda d, k: contrib[d][k] if d in contrib else 1 / dim  # noqa: E731
 
@@ -88,19 +89,23 @@ def performance(inputs, rj: dict, team_label: str = "", pic: str | None = None, 
     }
 
     pl_rows = {r["pl"]: r for r in rj.get("pl", [])}
+    pl_map = amap if not pl else amap[amap["pl"] == pl]
     pls = []
-    for name in sorted(set(amap["pl"])):
+    for name in sorted(set(amap["pl"])):  # every PL of the PIC
         t, a, ach = totals(raw[raw["pl"] == name], kpi[kpi["pl"] == name])
         r = pl_rows.get(name, {})
         pls.append({"pl": name, "target": t, "actual": a, "achieve": ach, "action": r.get("pacing_action") or "",
                     "sev": r.get("pacing_sev") or "", "reason": r.get("pacing_reason") or ""})
 
     ie = inputs.ineligible
-    last_log = max(ie["date"].dropna()) if len(ie) and ie["date"].notna().any() else None
+    logs = ie["date"].dropna() if len(ie) else pd.Series(dtype=object)
+    logs = logs[logs <= end_d]
+    last_log = max(logs) if len(logs) else None  # judged at the end date, not the newest log
     info = inputs.products.drop_duplicates("asin").set_index("asin")
+    raw_pl, kpi_pl = raw[raw["pl"].isin(set(pl_map["pl"]))], kpi[kpi["pl"].isin(set(pl_map["pl"]))]
     stock = dict(zip(kpi["asin"], kpi["stock"])) if "stock" in kpi.columns else {}
     skus = []
-    for a, sku, name in sorted(zip(amap["asin"], amap["sku"] if "sku" in amap.columns else amap["asin"], amap["pl"]),
+    for a, sku, name in sorted(zip(pl_map["asin"], pl_map["sku"] if "sku" in pl_map.columns else pl_map["asin"], pl_map["pl"]),
                                key=lambda x: (x[2], x[1])):
         t, ac, ach = totals(raw[raw["asin"] == a], kpi[kpi["asin"] == a])
         prod = info.loc[a].to_dict() if a in info.index else {}
@@ -111,19 +116,20 @@ def performance(inputs, rj: dict, team_label: str = "", pic: str | None = None, 
                      "target": t, "actual": ac, "achieve": ach})
 
     daily = []
-    by_day = raw.groupby("date")[["gmv", "spend", "ads_gmv", "units", "ads_units"]].sum()
+    by_day = raw_pl.groupby("date")[["gmv", "spend", "ads_gmv", "units", "ads_units"]].sum()
+    t_pl, _, _ = totals(raw_pl, kpi_pl)
     day = start_d
     while day <= end_d:
         v = by_day.loc[day] if day in by_day.index else None
         g, s, ag = (float(v["gmv"]), float(v["spend"]), float(v["ads_gmv"])) if v is not None else (0.0, 0.0, 0.0)
         u, au = (float(v["units"]), float(v["ads_units"])) if v is not None else (0.0, 0.0)
-        gt, stg = tgt["gmv"] * share(day, "gmv"), tgt["spend"] * share(day, "ppc")
+        gt, stg = t_pl["gmv"] * share(day, "gmv"), t_pl["spend"] * share(day, "ppc")
         daily.append({"date": day.isoformat(), "gmv": g, "gmv_target": gt, "ads_nmv": ag, "ads_rs_share": _div(au, u),
                       "spend": s, "spend_target": stg, "acos": _div(s, ag), "tacos": _div(s, g), "tacos_target": _div(stg, gt)})
         day += timedelta(days=1)
 
-    ads = inputs.ads[(inputs.ads["date"] >= start_d) & (inputs.ads["date"] <= end_d) & inputs.ads["asin"].isin(asins)]
-    ads = ads.merge(amap[["asin", "pl"]], on="asin")
+    ads = inputs.ads[(inputs.ads["date"] >= start_d) & (inputs.ads["date"] <= end_d) & inputs.ads["asin"].isin(set(pl_map["asin"]))]
+    ads = ads.merge(pl_map[["asin", "pl"]], on="asin")
     g = ads.groupby(["campaign_id", "pl"]).agg(campaign=("campaign", "first"), spend=("spend", "sum"),
                                               nmv=("sales", "sum"), orders=("orders", "sum")).reset_index()
     run_camp = {(c.get("campaign_id"), c.get("pl")): c for c in rj.get("camp", [])}

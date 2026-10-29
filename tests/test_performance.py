@@ -21,15 +21,15 @@ def data(tmp_path_factory):
     return inp, rj, logic
 
 
-def test_summary_tiles_for_one_pl(data):
+def test_summary_tiles_are_for_the_pic(data):
     inp, rj, logic = data
-    out = performance(inp, rj, "Team X", pic="PIC A", pl="PL Alpha")
+    out = performance(inp, rj, "Team X", pic="PIC A", pl="PL Alpha")  # the PL filter does not change the tiles
     t = out["summary"]
     assert out["filters"]["start"] == "2026-10-01" and out["filters"]["end"] == "2026-10-19"
     assert t["time_gone"] == pytest.approx(19 / 31) and t["campaign_gone"] == pytest.approx(19 / 31)
-    assert t["gmv"] == 3800 and t["gmv_target"] == 10000 and t["gmv_pct"] == pytest.approx(0.38)
-    assert t["spend"] == 228 and t["spend_target"] == 600 and t["spend_pct"] == pytest.approx(0.38)
-    assert t["ads_nmv"] == 1520 and t["acos"] == pytest.approx(228 / 1520) and t["tacos"] == pytest.approx(0.06)
+    assert t["gmv"] == 7600 and t["gmv_target"] == 16000 and t["gmv_pct"] == pytest.approx(0.475)
+    assert t["spend"] == 456 and t["spend_target"] == 800 and t["spend_pct"] == pytest.approx(0.57)
+    assert t["ads_nmv"] == 3040 and t["acos"] == pytest.approx(456 / 3040) and t["tacos"] == pytest.approx(0.06)
     assert t["ads_rs_share"] == pytest.approx(1 / 3)
 
 
@@ -54,7 +54,7 @@ def test_listing_issue_and_pl_filter(data):
     s5 = next(r for r in out["skus"] if r["sku"] == "S005")
     assert "Inactive" in s5["listing_issue"]
     only = performance(inp, rj, "Team X", pic="PIC A", pl="PL Beta")
-    assert {r["sku"] for r in only["skus"]} == {"S003", "S004"} and {r["pl"] for r in only["pls"]} == {"PL Beta"}
+    assert {r["sku"] for r in only["skus"]} == {"S003", "S004"} and {r["pl"] for r in only["pls"]} == {"PL Alpha", "PL Beta"}
     assert all(c["pl"] == "PL Beta" for c in only["campaigns"])
 
 
@@ -65,8 +65,30 @@ def test_daily_series_and_campaigns(data):
     assert [x["date"] for x in d][0] == "2026-10-10" and len(d) == 10
     assert d[0]["gmv"] == 200 and d[0]["gmv_target"] == pytest.approx(10000 / 31) and d[0]["ads_nmv"] == 80
     assert d[0]["spend_target"] == pytest.approx(600 * 0.05) and d[0]["tacos"] == pytest.approx(12 / 200)
-    assert out["summary"]["gmv"] == 2000 and out["summary"]["gmv_target"] == 10000  # timeframe actual vs month target
+    assert out["summary"]["gmv"] == 4000 and out["summary"]["gmv_target"] == 16000  # timeframe actual vs month target
     camps = {c["campaign"]: c for c in out["campaigns"]}
     alpha = next(c for k, c in camps.items() if k.startswith("Camp Alpha"))
     assert alpha["spend"] == 50 and alpha["nmv"] == 300 and alpha["orders"] == 10 and alpha["acos"] == pytest.approx(50 / 300)
     assert alpha["alert"] is True and "trend_spend" in alpha and "last_action" in alpha
+
+
+def test_pl_with_target_but_no_sales(data):
+    import dataclasses
+    inp, rj, logic = data
+    no_beta = dataclasses.replace(inp, raw=inp.raw[~inp.raw["asin"].isin(["B000000003", "B000000004"])])
+    beta = next(r for r in performance(no_beta, rj, "Team X", pic="PIC A")["pls"] if r["pl"] == "PL Beta")
+    assert beta["actual"]["tacos"] is None and beta["achieve"]["tacos"] is None and beta["achieve"]["gmv"] == 0
+
+
+def test_ineligible_judged_at_the_end_date_not_the_newest_log(data):
+    inp, rj, logic = data
+    # the log runs to 19/10; viewing up to 18/10 must still see 18/10's status
+    s3 = next(r for r in performance(inp, rj, "Team X", pic="PIC A", end="2026-10-18")["skus"] if r["sku"] == "S003")
+    assert s3["ineligible"] == {"current": "INELIGIBLE", "changes": 1, "days": 1}
+
+
+def test_listing_issue_ignores_normal_lifecycle_stages():
+    from pmkt_alert.performance import _listing_issue
+    assert _listing_issue({"status": "Active", "lifecycle": "Introduction"}) == ""
+    assert _listing_issue({"status": "Active", "lifecycle": "Turnkey"}) == ""
+    assert _listing_issue({"status": "Inactive", "lifecycle": "Withdrawal"}) == "Inactive · Withdrawal"
