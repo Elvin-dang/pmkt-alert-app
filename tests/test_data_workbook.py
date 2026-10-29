@@ -26,7 +26,7 @@ def test_loads_the_new_tables(v4):
     assert "units" in inp.raw.columns and "ads_units" in inp.raw.columns
     c = inp.contrib
     assert round(sum(v["gmv"] for v in c.values()), 6) == 1 and c[date(2026, 10, 1)]["ppc"] == pytest.approx(0.05)
-    assert inp.products.loc[inp.products["sku"] == "S006", "status"].iloc[0] == "Inactive"
+    assert inp.products.loc[inp.products["sku"] == "S005", "status"].iloc[0] == "Inactive"
     assert "lifecycle" in inp.products.columns
 
 

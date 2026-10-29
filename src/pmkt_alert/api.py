@@ -23,6 +23,7 @@ from .claude import _exe as claude_exe
 from .claude import install as install_claude_cli
 from .evidence import evidence
 from .export import export_pic
+from .performance import performance
 from .identity import LeadKeys, MemberKey, protect, raw_public, unprotect
 from .package import EXT, PackageError
 from .package import build as build_package
@@ -843,6 +844,20 @@ class Api:
         return {"run_id": run["run_id"], "scorecard": sc,
                 "weekly": weekly(self._ensure_inputs(), date.fromisoformat(run["result"]["as_of"])),
                 "runs": self._runs_history(), "team_review": run.get("team_review")}
+
+    @safe
+    def performance(self, filters: dict | None = None, run_id: str | None = None) -> dict:
+        """Performance Review page. Members always get their own PIC (their package holds nothing else)."""
+        f = dict(filters or {})
+        run = self._run_or_latest(run_id)
+        rj = run["result"]
+        if self._role() == "member":
+            logic_path, f["pic"] = self._member_state()["logic_path"], self._team().get("pic")
+        else:
+            logic_path = next((p for v, p in self._store.logic_versions() if v == rj["logic_version"]), None) or self._store.active_logic()
+        label = load_logic(logic_path).texts.get("team_label", "") if rj.get("model") == "score_v3" else ""
+        out = performance(self._ensure_inputs(), rj, label, f.get("pic") or None, f.get("pl") or None, f.get("start"), f.get("end"))
+        return {"run_id": run["run_id"], **out}
 
     @safe
     @lead_only

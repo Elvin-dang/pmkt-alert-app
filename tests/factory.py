@@ -297,7 +297,7 @@ def make_data_workbook(path: Path, drop_column: tuple[str, str] | None = None, s
         r.append(1)
     info = [["sku", "asin", "product_line_old", "status", "lifecycle", "PMKT PIC_Final", "Team Label"]]
     info += [[sku, asin, pl, "Active", "Normal", pic, "Team Y" if pl == "PL Delta" else "Team X"] for asin, sku, pl, pic in PRODUCTS]
-    info[-1][3] = "Inactive"  # a listing issue
+    info[5][3] = "Inactive"  # a listing issue (S005, PL Gamma, in scope)
     kpi = [["Month", "PIC SEM", "ASIN", "sku", "Product Line (Old)", "Current Stock", "GMV", "RS", "Spend_final", "TACOS"]]
     for month in (9, 10):
         for asin, sku, pl, pic in PRODUCTS:

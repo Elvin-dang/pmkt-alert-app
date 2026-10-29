@@ -10,6 +10,7 @@ from .loaders import Inputs
 from .windows import Windows
 
 TABLES = ("raw", "products", "kpi", "ineligible", "ads", "activity")
+OPTIONAL_TABLES = ("inventory",)  # v4 data; older packages lack it
 
 
 def _frame_bytes(df: pd.DataFrame) -> bytes:
@@ -45,21 +46,25 @@ def pack_run(run: dict, inputs: Inputs, logic_path: Path) -> dict[str, bytes]:
     start = min(win.mtd[0], win.p7d[0], week_start)
     tables = {"raw": _since(inputs.raw, start), "products": inputs.products,
               "kpi": inputs.kpi[inputs.kpi["month"] == as_of.month], "ineligible": _since(inputs.ineligible, win.l7d[0]),
-              "ads": _since(inputs.ads, min(win.mtd[0], win.p7d[0])), "activity": inputs.activity}
+              "ads": _since(inputs.ads, min(win.mtd[0], win.p7d[0])), "activity": inputs.activity,
+              "inventory": _since(inputs.inventory, win.l7d[0] - timedelta(days=14))}
     files = {f"data/{k}.json": _frame_bytes(v) for k, v in tables.items()}
     files["run.json"] = json.dumps(run, ensure_ascii=False).encode("utf-8")
     files["logic.xlsx"] = Path(logic_path).read_bytes()
     files["meta.json"] = json.dumps({"sources": inputs.sources, "defind_text": inputs.defind_text,
                                      "event_days": {k.isoformat(): v for k, v in inputs.event_days.items()},
+                                     "contrib": {k.isoformat(): v for k, v in (inputs.contrib or {}).items()},
                                      "logic_name": Path(logic_path).name}, ensure_ascii=False).encode("utf-8")
     return files
 
 
 def unpack_run(files: dict[str, bytes]) -> tuple[dict, Inputs, bytes, str]:
     meta = json.loads(files["meta.json"])
-    t = {k: _frame_from(files[f"data/{k}.json"]) for k in TABLES}
+    t = {k: _frame_from(files[f"data/{k}.json"]) for k in TABLES + OPTIONAL_TABLES if f"data/{k}.json" in files}
+    inv = t.get("inventory", pd.DataFrame(columns=["date", "asin", "sku", "stock"]))
     inputs = Inputs(t["raw"], t["products"], t["kpi"], t["ineligible"], t["ads"], t["activity"],
-                    {date.fromisoformat(k): v for k, v in meta["event_days"].items()}, meta["defind_text"], meta["sources"])
+                    {date.fromisoformat(k): v for k, v in meta["event_days"].items()}, meta["defind_text"], meta["sources"],
+                    inv, {date.fromisoformat(k): v for k, v in meta.get("contrib", {}).items()})
     return json.loads(files["run.json"]), inputs, files["logic.xlsx"], meta["logic_name"]
 
 
@@ -90,7 +95,7 @@ def filter_inputs(inputs: Inputs, run: dict, pic: str) -> Inputs:
         act = act[[normalize_name(_campaign_of(lv) or "") in keys for lv in act["level"]]]
     pick = lambda df: df[df["asin"].isin(asins)] if "asin" in df.columns else df  # noqa: E731
     return Inputs(pick(inputs.raw), pick(inputs.products), pick(inputs.kpi), pick(inputs.ineligible), pick(inputs.ads),
-                  act, inputs.event_days, inputs.defind_text, inputs.sources)
+                  act, inputs.event_days, inputs.defind_text, inputs.sources, pick(inputs.inventory), inputs.contrib)
 
 
 def build_parts(run: dict, inputs: Inputs, logic_path: Path, pics: list[str], scorecard_rows: dict) -> dict:

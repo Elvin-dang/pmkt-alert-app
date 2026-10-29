@@ -225,3 +225,21 @@ def test_app_requires_sign_in_before_use(tmp_path, synthetic_paths):
     assert "error" not in api.run([str(p) for p in synthetic_paths], use_claude=False)
     api.team_sign_out()
     assert "Đăng nhập" in api.run([str(p) for p in synthetic_paths])["error"]
+
+
+def test_member_performance_review_is_own_pic_only(tmp_path):
+    from factory import make_all_v4
+    sb = FakeSupabase(LEAD)
+    lead = device(tmp_path, "lead", sb)
+    sign_in(lead, LEAD, LEAD_PASSWORD)
+    pw = lead.add_member("a@team.test", "A", "PIC A")["password"]
+    a = device(tmp_path, "a", sb)
+    sign_in(a, "a@team.test", pw)
+    files = make_all_v4(tmp_path / "in")
+    run = lead.run([str(p) for p in files.values()], use_claude=False)
+    name = lead.upload_report(run["run_id"])["name"]
+    a.open_report(name)
+    out = a.performance({"pic": "PIC B"})  # asking for someone else's PIC is ignored
+    assert out["filters"]["pic"] == "PIC A" and {r["pl"] for r in out["pls"]} == {"PL Alpha", "PL Beta"}
+    assert out["summary"]["gmv"] == lead.performance({"pic": "PIC A"}, run["run_id"])["summary"]["gmv"]
+    assert out["summary"]["campaign_gone"] is not None and any(s["stock"] is not None for s in out["skus"])

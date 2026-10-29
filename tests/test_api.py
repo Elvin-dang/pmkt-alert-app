@@ -523,3 +523,13 @@ def test_run_error_names_step_and_location(tmp_path):
     out = Api(Store(tmp_path / "s"), status_fn=OK).run([str(p) for p in files.values()], use_claude=False)
     assert out["step"] == "load" and "Spend_final" in out["error"]
     assert out["location"] == {"file": files["data"].name, "sheet": "KPI", "columns": ["Spend_final"], "row": 1}
+
+
+def test_performance_api_v4(tmp_path):
+    from factory import make_all_v4
+    files = make_all_v4(tmp_path / "in")
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    run = api.run([str(p) for p in files.values()], use_claude=False)
+    out = api.performance({"pic": "PIC A"}, run["run_id"])
+    assert "error" not in out and out["filters"]["pics"] == ["PIC A", "PIC B"] and {r["pl"] for r in out["pls"]} == {"PL Alpha", "PL Beta"}
+    json.dumps(out, allow_nan=False)
