@@ -53,3 +53,10 @@ def test_missing_column_stops_with_location(tmp_path, v4):
     loc = e.value.location
     assert loc["file"] == "data.xlsx" and loc["sheet"] == "ads_camp" and loc["columns"] == ["spend_usd"] and loc["row"] == 1
     assert "spend_usd" in str(e.value)
+
+
+def test_data_workbook_ads_wins_over_an_old_ads_file(tmp_path, v4):
+    from factory import make_ads
+    old = make_ads(tmp_path / "old ads.xlsx")
+    roles = detect_inputs([*v4.values(), old])
+    assert roles["ads"] == v4["data"]

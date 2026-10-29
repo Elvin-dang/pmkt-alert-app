@@ -55,8 +55,11 @@ def test_bad_input_returns_error_not_raise(tmp_path):
 
 def test_detect(tmp_path, synthetic_paths):
     out = Api(Store(tmp_path / "s"), status_fn=OK).detect(paths(synthetic_paths))
-    assert set(out["roles"]) == {"tracker", "ads", "activity", "logic", "defind"}  # an older set: Defind still shown
-    assert out["roles"]["logic"]["name"] == "Alert_Logic_Ver 1.xlsx" and out["missing"] == []
+    # an older set: Defind is ignored; the separate ads file is folded into the Data slot
+    assert set(out["roles"]) == {"tracker", "ads", "activity", "logic"} and out["missing"] == []
+    assert out["roles"]["logic"]["name"] == "Alert_Logic_Ver 1.xlsx" and out["ignored"] == ["defind.xlsx"]
+    assert out["roles"]["tracker"]["name"] == "tracker.xlsx + ads.xlsx" and out["roles"]["ads"]["same_as"] == "tracker"
+    assert set(out["roles"]["tracker"]["paths"]) == {out["roles"]["tracker"]["path"], out["roles"]["ads"]["path"]}
 
 
 def test_feedback_roundtrip(tmp_path, synthetic_paths):
@@ -170,7 +173,7 @@ def test_detect_partial_lists_missing(tmp_path, synthetic_paths):
     api = Api(Store(tmp_path / "s"), status_fn=OK)
     two = [str(p) for p in synthetic_paths if p.name in ("ads.xlsx", "defind.xlsx")]
     out = api.detect(two)
-    assert set(out["roles"]) == {"ads", "defind"} and set(out["missing"]) == {"tracker", "activity", "logic"}
+    assert set(out["roles"]) == {"ads"} and set(out["missing"]) == {"tracker", "activity", "logic"}
     assert out["unknown"] == []
 
 
@@ -448,7 +451,7 @@ def test_detect_csv_tables_fill_tracker_slot(tmp_path):
     assert "tracker" in out["missing"] and "KPI" in out["tracker_missing"]
     full = api.detect([str(tmp_path / "c")])
     t = full["roles"]["tracker"]
-    assert full["missing"] == [] and set(t["paths"]) == {str(files[k]) for k in ("raw", "products", "kpi")}
+    assert full["missing"] == [] and set(t["paths"]) == {str(files[k]) for k in ("raw", "products", "kpi", "ads")}
     assert "raw_sso_us.csv" in t["name"]
     run = Api(Store(tmp_path / "s2"), status_fn=OK, ask_fn=always_raise(ClaudeError("x"))).run(
         [p for r in full["roles"].values() for p in r.get("paths", [r["path"]])])
@@ -477,7 +480,8 @@ def test_input_files_have_modified_time_and_detail(tmp_path, synthetic_paths):
     from datetime import datetime
     api = Api(Store(tmp_path / "s"), status_fn=OK)
     tracker = next(p for p in synthetic_paths if p.name == "tracker.xlsx")
-    os.utime(tracker, (datetime(2026, 10, 27, 14, 5).timestamp(),) * 2)
+    for f in (tracker, next(p for p in synthetic_paths if p.name == "ads.xlsx")):  # one Data slot = tracker + ads
+        os.utime(f, (datetime(2026, 10, 27, 14, 5).timestamp(),) * 2)
     roles = api.detect([str(p) for p in synthetic_paths])["roles"]
     assert roles["tracker"]["modified"] == "2026-10-27T14:05:00"
     d = api.file_detail([roles["tracker"]["path"]])
@@ -533,3 +537,13 @@ def test_performance_api_v4(tmp_path):
     out = api.performance({"pic": "PIC A"}, run["run_id"])
     assert "error" not in out and out["filters"]["pics"] == ["PIC A", "PIC B"] and {r["pl"] for r in out["pls"]} == {"PL Alpha", "PL Beta"}
     json.dumps(out, allow_nan=False)
+
+
+def test_new_data_workbook_replaces_old_tracker_and_ads(tmp_path, synthetic_paths):
+    from factory import make_all_v4
+    v4 = make_all_v4(tmp_path / "v4")
+    api = Api(Store(tmp_path / "s"), status_fn=OK)
+    out = api.detect([str(v4["data"]), *paths(synthetic_paths)])  # new pick first, old remembered set after
+    t = out["roles"]["tracker"]
+    assert t["name"] == v4["data"].name and t.get("paths", [t["path"]]) == [str(v4["data"])]
+    assert out["roles"]["ads"]["same_as"] == "tracker" and "ads.xlsx" in out["ignored"]

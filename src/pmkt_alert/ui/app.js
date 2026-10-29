@@ -131,14 +131,16 @@ function ago(iso) {
   return { days, text: days === 0 ? `hôm nay ${hm}` : days === 1 ? `hôm qua ${hm}` : `${ddmm(iso)}/${iso.slice(0, 4)} ${hm} · ${days} ngày trước` };
 }
 function slot(role) {
-  const r = S.roles && S.roles[role];
+  let r = S.roles && S.roles[role];
+  const noAds = role === "tracker" && r && !S.roles.ads;  // Data file without ads_camp
   const m = r && r.modified ? ago(r.modified) : null;
   const stale = m && DAILY.has(role) && m.days >= 2;
   return `<div class="slot ${r ? "clickable" : ""}" ${r ? `role="button" tabindex="0" data-slot="${role}" aria-label="Xem chi tiết ${esc(r.name)}"` : ""}>
     <svg class="i" aria-hidden="true"><use href="#file"/></svg><div style="min-width:0"><div class="name">${esc(r ? r.name : ROLE_NAME[role])}</div>
     <div class="meta">${r ? `${esc(ROLE_NAME[role])} · ${r.size_mb ? r.size_mb : "<0.1"} MB` : "Chưa có file"}</div>
     ${m ? `<div class="meta" style="${stale ? "color:var(--med);font-weight:600" : ""}" title="Lần lưu gần nhất (Last modified)">Sửa lần cuối: ${m.text}${stale ? " – data có thể đã cũ" : ""}</div>` : ""}</div>
-    <span class="badges">${r && r.new ? '<span class="sev INFO" title="File đã thay đổi kể từ lần chạy trước">MỚI</span>' : ""}<span class="st sev ${r ? "OK" : "MED"}">${r ? "HỢP LỆ" : "THIẾU"}</span></span></div>`;
+    ${noAds ? '<div class="meta" style="color:var(--high);font-weight:600">Thiếu sheet ads_camp trong file Data</div>' : ""}
+    <span class="badges">${r && r.new ? '<span class="sev INFO" title="File đã thay đổi kể từ lần chạy trước">MỚI</span>' : ""}<span class="st sev ${r && !noAds ? "OK" : "MED"}">${r && !noAds ? "HỢP LỆ" : "THIẾU"}</span></span></div>`;
 }
 async function openFileDetail(role) {
   const r = S.roles[role];
@@ -164,9 +166,8 @@ async function openFileDetail(role) {
 }
 function renderSlots() {
   const ro = S.roles || {};
-  const adsSlot = ro.tracker && !(ro.ads && ro.ads.same_as) ? ["ads"] : [];  // only when ads_camp is a separate file / missing
-  $("#slots-data").innerHTML = ["tracker", ...adsSlot, "activity"].map(slot).join("");
-  $("#slots-setting").innerHTML = ["logic", ...(ro.defind ? ["defind"] : [])].map(slot).join("");
+  $("#slots-data").innerHTML = ["tracker", "activity"].map(slot).join("");
+  $("#slots-setting").innerHTML = slot("logic");
   $("#run-btn").disabled = !S.roles || ROLES.some((role) => !S.roles[role]);
 }
 const ROLES = ["tracker", "ads", "activity", "logic"];
@@ -178,7 +179,7 @@ async function useInputs(paths) {
   S.roles = r.roles;
   S.paths = [...new Set(Object.values(r.roles).flatMap((x) => x.paths || [x.path]))];
   const msgs = [];
-  if (r.missing.length) msgs.push("Còn thiếu: " + r.missing.map((m) => ROLE_NAME[m]).join(", ")
+  if (r.missing.length) msgs.push("Còn thiếu: " + r.missing.filter((m) => !(m === "ads" && r.roles.tracker)).map((m) => ROLE_NAME[m]).join(", ")
     + (r.tracker_missing?.length ? ` (CSV còn thiếu: ${r.tracker_missing.join(", ")})` : ""));
   if (r.unknown.length) msgs.push("Không nhận ra: " + r.unknown.join(", "));
   $("#input-error").textContent = msgs.join(" · ");

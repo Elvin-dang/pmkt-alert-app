@@ -663,8 +663,11 @@ class Api:
                 found[role] = f
         info = lambda f: {"path": str(f), "name": f.name, "size_mb": round(f.stat().st_size / 1e6, 1),  # noqa: E731
                           "modified": _mtime(f)}
-        roles = {r: info(f) for r, f in found.items() if r in ROLES or r in OPTIONAL_ROLES}
-        if "ads" not in roles and "tracker" in found and "ads_camp" in sheet_names(found["tracker"]):
+        roles = {r: info(f) for r, f in found.items() if r in ROLES}
+        ignored = [f.name for r, f in found.items() if r in OPTIONAL_ROLES]  # Defind: no longer used
+        if "tracker" in found and "ads_camp" in sheet_names(found["tracker"]):
+            if "ads" in roles:  # the Data workbook has its own ads_camp: an older separate Ads file is not used
+                ignored.append(roles["ads"]["name"])
             roles["ads"] = {**info(found["tracker"]), "same_as": "tracker"}  # v4: the Data workbook carries ads_camp
         parts = {t: found[t] for t in TRACKER_SHEETS if t in found}
         tracker_missing = []
@@ -677,11 +680,17 @@ class Api:
                                     "modified": max(_mtime(f) for f in parts.values())}
         elif parts and "tracker" in roles:  # CSV tables override the workbook's sheets
             roles["tracker"]["paths"] = [roles["tracker"]["path"], *[str(f) for f in parts.values()]]
+        if "tracker" in roles and "ads" in roles and not roles["ads"].get("same_as"):
+            # an older set with a separate Ads file: show it as part of the one Data slot
+            t, ad = roles["tracker"], roles["ads"]
+            t.update(paths=[*(t.get("paths") or [t["path"]]), ad["path"]], name=f"{t['name']} + {ad['name']}",
+                     size_mb=round(t["size_mb"] + ad["size_mb"], 1), modified=max(t["modified"], ad["modified"]))
+            ad["same_as"] = "tracker"
         seen = self._store.get_settings().get("last_run_files") or {}
         for r in roles.values():  # "Mới": changed since the last finished run
             r["new"] = any(seen.get(p) != _mtime(Path(p)) for p in r.get("paths") or [r["path"]])
         return {"roles": roles, "missing": [r for r in ROLES if r not in roles], "unknown": unknown,
-                "tracker_missing": tracker_missing}
+                "tracker_missing": tracker_missing, "ignored": ignored}
 
     @safe
     def file_detail(self, paths: list[str]) -> dict:

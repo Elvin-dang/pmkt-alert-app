@@ -92,7 +92,13 @@ def input_files(paths: list[Path]) -> list[Path]:
     files: list[Path] = []
     for p in map(Path, paths):
         files += sorted([*p.glob("*.xlsx"), *p.glob("*.csv")]) if p.is_dir() else [p]
-    return [f for f in files if not f.name.startswith("~$")]
+    seen, out = set(), []
+    for f in files:  # the same file picked twice (e.g. via two slots) is one file
+        key = f.resolve()
+        if key not in seen and not f.name.startswith("~$"):
+            seen.add(key)
+            out.append(f)
+    return out
 
 
 def detect_inputs(paths: list[Path]) -> dict[str, Path]:
@@ -109,8 +115,8 @@ def detect_inputs(paths: list[Path]) -> dict[str, Path]:
             found.setdefault(role, []).append(f)
     if len(found.get("activity", [])) > 1:  # daily exports pile up in Downloads: use the newest
         found["activity"] = [max(found["activity"], key=lambda f: f.stat().st_mtime)]
-    if "ads" not in found and len(found.get("tracker", [])) == 1 and "ads_camp" in sheet_names(found["tracker"][0]):
-        found["ads"] = list(found["tracker"])  # v4: the Data workbook carries ads_camp too
+    if len(found.get("tracker", [])) == 1 and "ads_camp" in sheet_names(found["tracker"][0]):
+        found["ads"] = list(found["tracker"])  # v4: the Data workbook carries ads_camp (an old Ads file is not used)
     if "tracker" not in found and any(t in found for t in TRACKER_SHEETS):
         missing = [TRACKER_SHEETS[t] for t in TRACKER_REQUIRED if t not in found]
         if missing:
